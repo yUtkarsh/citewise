@@ -19,7 +19,8 @@ from app.ingest.pdf_lines import base_font_name, is_bold
 from app.ingest.pass1.layout import reading_order
 from app.ingest.pass1.segment import Segmentation, clause_id, low_coverage_ranges, number_key, parent_number
 from app.ingest.pass1.skeleton import Skeleton, build_skeleton
-from app.profile.consistency import consistency_issues, id_mismatches, reference_share, where_share
+from app.profile.consistency import (consistency_issues, id_mismatches, reference_share, undeclared_levels,
+                                     where_share)
 from app.profile.schema import Profile, Validation
 
 MIN_COVERAGE = 0.90
@@ -171,7 +172,8 @@ def check_shares(skel: Skeleton, profile: Profile) -> dict[str, float]:
     text = "\n".join(c.text for c in skel.seg.clauses)
     return {"where_items": round(where_share(skel, profile)[0].share, 4),
             "references": round(reference_share(text, profile)[0].share, 4),
-            "ids": round(id_mismatches(skel, profile)[0].share, 4)}
+            "ids": round(id_mismatches(skel, profile)[0].share, 4),
+            "levels": round(undeclared_levels(skel, profile)[0].share, 4)}
 
 
 def render_failures(skel: Skeleton, validation: Validation, low: list[tuple[int, int]], profile: Profile) -> str:

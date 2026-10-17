@@ -22,6 +22,7 @@ MIN_WHERE_SHARE = 0.90  # share of definition lines in where-blocks the item pat
 MIN_REFERENCE_SHARE = 0.90  # share of reference-like mentions the reference patterns must accept
 REFERENCE_WORD_SHARE = 0.5  # a word followed by a section-style number at least this often is a reference word
 MAX_ID_MISMATCH_SHARE = 0.01  # share of headings whose id may disagree with the printed number
+MAX_UNDECLARED_SHARE = 0.01  # share of headings that may sit at a depth their stream does not declare
 
 # A definition line: a short symbol, "=", then text. Symbols may hold any characters but spaces and "=";
 # a first word ending in ":" is a label ("Note: IO = ..."), not a symbol.
@@ -117,6 +118,23 @@ def id_mismatches(skel: Skeleton, profile: Profile) -> tuple[Share, list[str]]:
     return Share(total - len(bad), total), bad
 
 
+def undeclared_levels(skel: Skeleton, profile: Profile) -> tuple[Share, Counter]:
+    """Headings at a depth for which their stream declares no level: the profile is
+    incomplete even when another level's style happens to catch them."""
+    streams = {s.name: s for s in profile.streams}
+    total, missing = 0, Counter()
+    for blocks in skel.blocks.values():
+        for block in blocks:
+            if block.kind != "heading":
+                continue
+            stream = streams[block.stream]
+            total += 1
+            depth = len(block.number.split(stream.separator))
+            if all(lv.depth != depth for lv in stream.levels):
+                missing[(stream.name, depth, block.style)] += 1
+    return Share(total - sum(missing.values()), total), missing
+
+
 def consistency_issues(skel: Skeleton, profile: Profile) -> tuple[list[str], list[str]]:
     """(issues that fail validation, examples to show Claude)."""
     failing, examples = [], []
@@ -132,6 +150,11 @@ def consistency_issues(skel: Skeleton, profile: Profile) -> tuple[list[str], lis
                        f"mentions ({refs.share:.0%}, needs {MIN_REFERENCE_SHARE:.0%})")
         common = Counter(re.sub(r"\d", "#", u) for u in uncovered).most_common(10)
         examples += [f"  uncovered mention shape: {shape!r} x{n}" for shape, n in common]
+    levels, missing = undeclared_levels(skel, profile)
+    if levels.total and 1 - levels.share > MAX_UNDECLARED_SHARE:
+        failing.append(f"levels: {sum(missing.values())} of {levels.total} headings sit at depths their stream "
+                       f"does not declare")
+        examples += [f"  stream {s} depth {d} [{style}] x{n}: add a level" for (s, d, style), n in missing.most_common(6)]
     ids, bad = id_mismatches(skel, profile)
     if ids.total and 1 - ids.share > MAX_ID_MISMATCH_SHARE:
         failing.append(f"ids: {ids.total - ids.matched} of {ids.total} heading ids disagree with the printed numbers")

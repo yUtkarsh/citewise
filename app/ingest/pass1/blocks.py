@@ -61,18 +61,23 @@ def prose_styles(lines: list[Line]) -> set[tuple[str, float, bool]]:
 
 
 def match_heading(line: Line, profile: Profile) -> tuple[Stream, str, str] | None:
-    """(stream, number, title) when the line starts with a stream number in that level's style."""
+    """(stream, number, title) when the line starts with a stream number and its style
+    confirms it is a heading. Depth comes from the number. A depth the profile declares
+    must use that level's style (a bold numbered list item set like a deeper heading is
+    not a heading); a depth it forgot to declare is accepted in any of the stream's
+    heading styles, so those headings are still found and the level-completeness check
+    reports the gap."""
     text = line.text.strip()
     first = line.first_span
+    styled = lambda lv: lv.style.matches(first["font"], first["size"], is_bold(first))  # noqa: E731
     for stream in profile.streams:
         match = re.match(stream.number_regex, text)
         if not match:
             continue
-        num = match.group("num")
-        depth = len(num.split(stream.separator))
-        level = next((lv for lv in stream.levels if lv.depth == depth), None)
-        if level and level.style.matches(first["font"], first["size"], is_bold(first)):
-            return stream, num, text[match.end():].strip()
+        depth = len(match.group("num").split(stream.separator))
+        declared = [lv for lv in stream.levels if lv.depth == depth]
+        if any(map(styled, declared or stream.levels)):
+            return stream, match.group("num"), text[match.end():].strip()
     return None
 
 

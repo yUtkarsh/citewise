@@ -59,3 +59,47 @@ def test_ids_must_agree_with_printed_numbers(tmp_path):
     assert bad.validation.checks["ids"] == 0.0 and bad.validation.status == "warning"
     share, examples = id_mismatches(bad.skeleton, bad.skeleton.ctx.profile)
     assert share.total == 1 and "not printed" in examples[0]
+
+
+def two_level_page():
+    return (syn.heading("1", "General", 60) + syn.prose(75, 1) + syn.heading("1.1", "Scope", 100) + syn.prose(115, 1)
+            + syn.heading("1.1.1", "Detail", 140, size=10) + syn.prose(155, 1)
+            + syn.heading("1.1.2", "More", 180, size=10) + syn.prose(195, 1))
+
+
+def test_style_confirms_heading_and_number_gives_depth(tmp_path):
+    rules = syn.rules()
+    rules["streams"][0]["levels"] = [{"depth": 1, "style": {"font_regex": "^Helvetica-Bold$", "size_min": 9.5,
+                                                            "size_max": 11.5, "bold": True}}]
+    doc = pymupdf.open(syn.make_pdf(tmp_path / "l.pdf", [two_level_page()]))
+    report = validate(doc, syn.profile(1, streams=rules["streams"]))
+    clauses = report.skeleton.seg.clauses
+    assert [(c.id, c.depth) for c in clauses] == [("1", 1), ("1.1", 2), ("1.1.1", 3), ("1.1.2", 3)]
+    assert report.validation.checks["levels"] == 0.25  # depths 2 and 3 are not declared
+    assert report.validation.status == "warning"
+    assert any("add a level" in i for i in report.validation.issues)
+
+
+def test_complete_levels_pass(tmp_path):
+    doc = pymupdf.open(syn.make_pdf(tmp_path / "l.pdf", [two_level_page()]))
+    rules = syn.rules()
+    for level in rules["streams"][0]["levels"]:
+        level["style"]["size_min"] = 9.5
+    report = validate(doc, syn.profile(1, streams=rules["streams"]))
+    assert report.validation.checks["levels"] == 1.0
+    assert len(report.skeleton.seg.clauses) == 4
+
+
+def test_declared_depth_keeps_its_own_style(tmp_path):
+    """A bold numbered list item set like a deeper heading is not a heading at a depth
+    whose own style differs."""
+    page = (syn.heading("1", "General", 60, size=11) + syn.prose(75, 1)
+            + [("2.", 54, 100, "bold", 10), ("Liquefaction.", 70, 100, "bold", 10)] + syn.prose(115, 1)
+            + syn.heading("1.1", "Scope", 140, size=10) + syn.prose(155, 1))
+    rules = syn.rules()
+    rules["streams"][0]["levels"] = [
+        {"depth": 1, "style": {"font_regex": "^Helvetica-Bold$", "size_min": 10.8, "size_max": 11.2, "bold": True}},
+        {"depth": 2, "style": {"font_regex": "^Helvetica-Bold$", "size_min": 9.8, "size_max": 10.2, "bold": True}}]
+    doc = pymupdf.open(syn.make_pdf(tmp_path / "d.pdf", [page]))
+    clauses = validate(doc, syn.profile(1, streams=rules["streams"])).skeleton.seg.clauses
+    assert [c.id for c in clauses] == ["1", "1.1"]
