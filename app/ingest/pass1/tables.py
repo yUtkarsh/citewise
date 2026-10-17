@@ -306,6 +306,34 @@ def add_borderless(segments: dict[int, list[TableSegment]], page_lines: dict[int
                 segments.setdefault(page, []).append(seg)
 
 
+def trim_notes(segments: dict[int, list[TableSegment]], page_lines: dict[int, list[Line]], is_note,
+               marker_regex: str = tc.DEFAULT_MARKER) -> None:
+    """Table notes printed inside the grid box (below the last row that has several
+    cells) are not grid rows: cut the box and its rows above the first note, so the
+    notes become footnotes of the table. Notes are recognised only when the table or
+    its caption references at least one of their markers; a cell that merely starts
+    with a number is left alone."""
+    for page, segs in segments.items():
+        lines = page_lines.get(page, [])
+        for seg in segs:
+            inside = sorted((ln for ln in lines if _centre_in(ln.bbox, seg.bbox)), key=lambda ln: ln.bbox[1])
+            multi = [ln for ln in inside if sum(1 for o in inside if o is not ln and abs(o.baseline - ln.baseline) <= ROW_BASELINE) > 0]
+            last_row = max((ln.bbox[3] for ln in multi), default=seg.bbox[1])
+            notes = [(ln, m) for ln in inside if ln.bbox[1] >= last_row - 1 and (m := is_note(ln))]
+            if not notes:
+                continue
+            scope = inside + [ln for ln in lines if seg.caption_bbox and _centre_in(ln.bbox, seg.caption_bbox)]
+            referenced = {m for ln in scope for m, _ in tc.superscripts(ln, marker_regex)}
+            if not any(m in referenced for _, m in notes):
+                continue
+            cut = notes[0][0].bbox[1] - 0.5
+            keep = [i for i, b in enumerate(seg.row_bboxes) if (b[1] + b[3]) / 2 < cut]
+            seg.rows = [seg.rows[i] for i in keep]
+            seg.row_bboxes = [seg.row_bboxes[i] for i in keep]
+            seg.header_rows = min(seg.header_rows, len(seg.rows))
+            seg.bbox = (seg.bbox[0], seg.bbox[1], seg.bbox[2], cut)
+
+
 def _caption_continuation(prev: Line, lines: list[Line]) -> Line | None:
     """The wrapped next line of a caption: same style, directly below, starting
     within the previous line's horizontal extent."""
@@ -400,7 +428,7 @@ def _norm(row: list[str]) -> str:
     return re.sub(r"\s+", " ", " | ".join(dict.fromkeys(c for c in row if c))).strip().lower()
 
 
-def build_rows(table: Table, page_lines: dict[int, list[Line]]) -> None:
+def build_rows(table: Table, page_lines: dict[int, list[Line]], marker_regex: str = tc.DEFAULT_MARKER) -> None:
     """Rows in page order; header rows repeated on continuation pages are dropped.
     Row markers are superscripts inside the row (footnote references)."""
     first = table.segments[0]
@@ -412,26 +440,33 @@ def build_rows(table: Table, page_lines: dict[int, list[Line]]) -> None:
             if n and (is_header or _norm(cells) in headers):
                 continue  # repeated header on a continuation page
             markers = [m for line in page_lines.get(seg.page, []) if _centre_in(line.bbox, box)
-                       for m, _ in tc.superscripts(line)]
+                       for m, _ in tc.superscripts(line, marker_regex)]
             table.rows.append(Row(index=index, page=seg.page, bbox=box, cells=cells,
                                   is_header=is_header, markers=sorted(set(markers))))
             index += 1
 
 
 def attach_footnotes(tables: list[Table], blocks: dict[int, list[Block]]) -> set[int]:
-    """Footnote blocks below a table segment on its page belong to that table.
+    """A footnote block belongs to the nearest table segment above it on its page that
+    overlaps it horizontally (two tables on a page each keep their own notes).
     Returns the ids of the blocks used."""
-    used = set()
+    by_page: dict[int, list[tuple[TableSegment, Table]]] = {}
     for table in tables:
         for seg in table.segments:
-            for block in blocks.get(seg.page, []):
-                if block.kind != "footnote" or id(block) in used:
-                    continue
-                below = block.bbox[1] >= seg.bbox[3] - 2
-                overlap = min(block.bbox[2], seg.bbox[2]) > max(block.bbox[0], seg.bbox[0])
-                if below and overlap:
-                    table.footnotes.append(Footnote(block.marker, block.text, block.page, block.bbox))
-                    used.add(id(block))
+            by_page.setdefault(seg.page, []).append((seg, table))
+    used = set()
+    for page, segs in by_page.items():
+        for block in blocks.get(page, []):
+            if block.kind != "footnote":
+                continue
+            above = [(seg, table) for seg, table in segs
+                     if block.bbox[1] >= seg.bbox[3] - 2
+                     and min(block.bbox[2], seg.bbox[2]) > max(block.bbox[0], seg.bbox[0])]
+            if not above:
+                continue
+            _, table = max(above, key=lambda st: st[0].bbox[3])
+            table.footnotes.append(Footnote(block.marker, block.text, block.page, block.bbox))
+            used.add(id(block))
     return used
 
 

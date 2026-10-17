@@ -1,13 +1,15 @@
 """Step 3a.1: one ordered list of blocks per page, every pattern from the profile."""
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass, field
 import re
 
 import pymupdf
 
 from app.ingest import text_checks as tc
-from app.ingest.pdf_lines import Line, Rect, body_style, is_bold, read_lines, union
+from app.ingest.pdf_lines import (Line, Rect, base_font_name, body_style, is_bold, outside_text_area, read_lines,
+                                  style_key, union)
 from app.ingest.pass1 import equations as eqs
 from app.ingest.pass1.layout import assign_columns, is_running, reading_order, repeated_band_lines
 from app.ingest.pass1.model import Block, TableSegment
@@ -15,6 +17,7 @@ from app.profile.schema import Profile, Stream
 
 CONTINUATION_GAP = 1.6  # line pitch, in font sizes, that still continues a heading or caption
 FOOTNOTE_SIZE_MARGIN = 0.5  # footnotes are set smaller than the document body text
+PROSE_SHARE = 0.05  # a regular-weight style with this share of all characters is a prose style
 
 
 @dataclass
@@ -26,6 +29,7 @@ class DocContext:
     repeated: set[str]
     page_lines: dict[int, list[Line]] = field(default_factory=dict)  # running elements removed
     sizes: dict[int, tuple[float, float]] = field(default_factory=dict)  # page -> (width, height)
+    prose_styles: set[tuple[str, float, bool]] = field(default_factory=set)  # regular-weight text styles
 
 
 def load_context(doc: pymupdf.Document, profile: Profile, pages: list[int]) -> DocContext:
@@ -33,13 +37,27 @@ def load_context(doc: pymupdf.Document, profile: Profile, pages: list[int]) -> D
     sizes = {p: (doc[p - 1].rect.width, doc[p - 1].rect.height) for p in pages}
     repeated = repeated_band_lines(raw, {p: h for p, (_, h) in sizes.items()})
     cleaned = {
-        p: [ln for ln in lines if not is_running(ln, sizes[p][1], profile, repeated)]
+        p: [ln for ln in lines
+            if not is_running(ln, sizes[p][1], profile, repeated) and not outside_text_area(ln, lines)]
         for p, lines in raw.items()
     }
     for p, lines in cleaned.items():
         assign_columns(lines, sizes[p][0])
-    body = profile.body_style or body_style([ln for lines in cleaned.values() for ln in lines])
-    return DocContext(profile=profile, body=body, repeated=repeated, page_lines=cleaned, sizes=sizes)
+    all_lines = [ln for lines in cleaned.values() for ln in lines]
+    body = profile.body_style or body_style(all_lines)
+    return DocContext(profile=profile, body=body, repeated=repeated, page_lines=cleaned, sizes=sizes,
+                      prose_styles=prose_styles(all_lines) | {body})
+
+
+def prose_styles(lines: list[Line]) -> set[tuple[str, float, bool]]:
+    """Regular-weight styles that carry a real share of the text (a document may set
+    its own provisions upright and quoted material in italic, for example)."""
+    counts: Counter = Counter()
+    for line in lines:
+        for span in line.spans:
+            counts[style_key(span)] += len(span["text"].strip())
+    total = sum(counts.values()) or 1
+    return {style for style, n in counts.items() if not style[2] and n / total >= PROSE_SHARE}
 
 
 def match_heading(line: Line, profile: Profile) -> tuple[Stream, str, str] | None:
@@ -56,6 +74,60 @@ def match_heading(line: Line, profile: Profile) -> tuple[Stream, str, str] | Non
         if level and level.style.matches(first["font"], first["size"], is_bold(first)):
             return stream, num, text[match.end():].strip()
     return None
+
+
+def split_run_in(line: Line, prose: set[tuple[str, float, bool]]) -> tuple[Line, Line | None]:
+    """A run-in heading ("7.2.1 Title. Body text ...") ends where the heading's typeface
+    ends and a prose style begins; returns (heading part, body part or None)."""
+    spans = line.spans
+    first = line.first_span
+    start = spans.index(first)
+
+    k = start
+    while k < len(spans) and (same_face(spans[k], first) or not spans[k]["text"].strip()):
+        k += 1
+    rest = [s for s in spans[k:]]
+    if not rest or not any(s["text"].strip() for s in rest):
+        return line, None
+    lead = next(s for s in rest if s["text"].strip())
+    if (lead["font"], round(lead["size"], 1), is_bold(lead)) not in prose:
+        return line, None  # a title with a symbol or a change of type, not a run-in body
+    head = Line(line.page, _span_box(spans[:k]), spans[:k], col=line.col)
+    body_part = Line(line.page, _span_box(rest), rest, col=line.col)
+    return head, body_part
+
+
+def same_face(span: dict, ref: dict) -> bool:
+    """Same typeface (font without subset or encoding tags), weight and size."""
+    return (base_font_name(span["font"]) == base_font_name(ref["font"]) and is_bold(span) == is_bold(ref)
+            and abs(span["size"] - ref["size"]) < 0.3)
+
+
+def _span_box(spans: list[dict]) -> Rect:
+    box = tuple(spans[0]["bbox"])
+    for span in spans[1:]:
+        box = union(box, tuple(span["bbox"]))
+    return box
+
+
+def continues_citation(prev: Line | None, line: Line, profile: Profile) -> bool:
+    """True when ``line`` starts with a number only because a citation wrapped: the line
+    just above ends with a reference word or connector ("... Sections 12.1 through")."""
+    if prev is None or prev.col != line.col:
+        return False
+    gap = line.baseline - prev.baseline
+    if not 0 < gap <= CONTINUATION_GAP * line.size:
+        return False
+    words = [w for kind in profile.references for w in kind.words]
+    words += profile.list_connectors + profile.range_connectors
+    tail = prev.text.rstrip()
+    for word in sorted(set(words), key=len, reverse=True):
+        if word[:1].isalnum():
+            if re.search(rf"\b{re.escape(word)}$", tail, re.IGNORECASE):
+                return True
+        elif word and tail.endswith(word):
+            return True
+    return False
 
 
 def _continues(prev: Line, line: Line) -> bool:
@@ -134,13 +206,34 @@ def page_blocks(page: int, ctx: DocContext, tables: list[TableSegment] = ()) -> 
         line = lines[i]
         text = line.text.strip()
         style = line.style
-        if heading := match_heading(line, profile):
+        heading = match_heading(line, profile)
+        if heading and continues_citation(lines[i - 1] if i else None, line, profile):
+            heading = None
+        if heading:
             stream, num, title = heading
-            group = [line]
-            while i + 1 < len(lines) and _continues(group[-1], lines[i + 1]) and not match_heading(lines[i + 1], profile):
+            head, run_in = split_run_in(line, ctx.prose_styles)
+            if run_in is not None:  # run-in heading: the rest of the line is body text
+                match = re.match(stream.number_regex, head.text.strip())
+                title = head.text.strip()[match.end():].strip() if match else title
+                blocks.append(_block("heading", [head], style, number=num, stream=stream.name, title=title))
+                blocks.append(_block("text", [run_in], run_in.style))
                 i += 1
-                group.append(lines[i])
-                title = f"{title} {lines[i].text.strip()}".strip()
+                continue
+            group, tail = [line], None
+            while (i + 1 < len(lines) and _continues(group[-1], lines[i + 1])
+                   and same_face(lines[i + 1].first_span, line.first_span)
+                   and not match_heading(lines[i + 1], profile)):
+                i += 1
+                part, tail = split_run_in(lines[i], ctx.prose_styles)  # a wrapped title may end in a run-in body
+                group.append(part)
+                title = f"{title} {part.text.strip()}".strip()
+                if tail is not None:
+                    break
+            if tail is not None:
+                blocks.append(_block("heading", group, style, number=num, stream=stream.name, title=title))
+                blocks.append(_block("text", [tail], tail.style))
+                i += 1
+                continue
             if not title and i + 1 < len(lines) and _title_below(line, lines[i + 1], ctx):
                 i += 1
                 group.append(lines[i])

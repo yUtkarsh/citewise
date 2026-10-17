@@ -2,18 +2,20 @@
 
 Each heading block starts a clause. Text before a page's first heading continues
 the previous clause. The parent comes from the number (drop the last component);
-commentary links to the provision with the same number.
+commentary links to the provision with the same number. A nested stream (sections
+of another standard quoted inside this one) hangs under the clause that quotes it.
 """
 from __future__ import annotations
 
+from bisect import bisect_right
 from collections import defaultdict
 from dataclasses import dataclass, field
 
-from app.ingest.pass1.layout import join_lines, normalize
+from app.ingest.pass1.layout import join_lines, normalize, normalize_line
 from app.ingest.pass1.model import Block, Clause
-from app.profile.schema import Profile
+from app.profile.schema import Profile, Stream
 
-COVERAGE_WINDOW = 2  # text more than this many pages after its clause heading counts as uncovered
+COVERAGE_WINDOW = 2  # prose further than this many prose-bearing pages from its heading counts as uncovered
 TEXT_KINDS = {"text", "where", "caption", "footnote"}
 
 
@@ -45,17 +47,29 @@ def parent_number(num: str, separator: str) -> str | None:
     return separator.join(parts[:-1]) if len(parts) > 1 else None
 
 
+def clause_id(stream: Stream, num: str) -> str:
+    return stream.id_prefix + stream.prefix + num
+
+
+def is_prose(block: Block, body_style: str) -> bool:
+    return block.kind == "text" and block.style == body_style
+
+
 def segment(pages: dict[int, list[Block]], profile: Profile, vocab: set[str], body_style: str) -> Segmentation:
     streams = {s.name: s for s in profile.streams}
     seg = Segmentation(clauses=[], owner={})
     seen: dict[str, int] = defaultdict(int)
     lines_of: dict[str, list[str]] = defaultdict(list)
+    last_of_stream: dict[str, str] = {}
+    # Coverage counts distance in pages that carry prose, so pages holding only a table
+    # or a figure do not make the text after them look orphaned.
+    prose_pages = sorted(p for p, blocks in pages.items() if any(is_prose(b, body_style) for b in blocks))
     current: Clause | None = None
     for page in sorted(pages):
         for block in pages[page]:
             if block.kind == "heading":
                 stream = streams[block.stream]
-                cid = stream.prefix + block.number
+                cid = clause_id(stream, block.number)
                 seen[cid] += 1
                 if seen[cid] > 1:
                     seg.duplicates.append(f"p{page}: heading {cid} repeated")
@@ -66,8 +80,10 @@ def segment(pages: dict[int, list[Block]], profile: Profile, vocab: set[str], bo
                     page=page, bbox=block.bbox, page_end=page, order=len(seg.clauses),
                 )
                 if stream.commentary_of:
-                    target = streams[stream.commentary_of]
-                    current.commentary_on = target.prefix + block.number
+                    current.commentary_on = clause_id(streams[stream.commentary_of], block.number)
+                if stream.nested_in:
+                    current.container_id = last_of_stream.get(stream.nested_in)
+                last_of_stream[stream.name] = cid
                 seg.clauses.append(current)
                 seg.owner[id(block)] = cid
                 continue
@@ -75,12 +91,13 @@ def segment(pages: dict[int, list[Block]], profile: Profile, vocab: set[str], bo
             if current:
                 current.page_end = page
                 if block.kind in TEXT_KINDS:
-                    lines_of[current.id].extend(normalize(ln.text) for ln in block.lines)
-            if block.kind == "text" and block.style == body_style:
+                    lines_of[current.id].extend(normalize_line(ln, profile.unmapped_fonts) for ln in block.lines)
+            if is_prose(block, body_style):
                 n = len(block.text)
                 seg.prose_chars += n
                 seg.prose_by_page[page] = seg.prose_by_page.get(page, 0) + n
-                if current and page - current.page <= COVERAGE_WINDOW:
+                distance = bisect_right(prose_pages, page) - bisect_right(prose_pages, current.page) if current else None
+                if current and distance <= COVERAGE_WINDOW:
                     seg.covered_chars += n
                 else:
                     seg.uncovered_by_page[page] = seg.uncovered_by_page.get(page, 0) + n
@@ -93,7 +110,8 @@ def segment(pages: dict[int, list[Block]], profile: Profile, vocab: set[str], bo
 def assign_parents(clauses: list[Clause], profile: Profile) -> None:
     """Parent = the nearest existing ancestor number in the clause's own stream.
     Commentary exists only where there is something to say, so a commentary clause
-    without a commentary ancestor hangs under the provision ancestor instead."""
+    without a commentary ancestor hangs under the provision ancestor instead. A nested
+    clause without an ancestor hangs under the clause that quotes it."""
     streams = {s.name: s for s in profile.streams}
     ids = {c.id for c in clauses}
     for clause in clauses:
@@ -101,13 +119,15 @@ def assign_parents(clauses: list[Clause], profile: Profile) -> None:
         fallback = streams.get(stream.commentary_of) if stream.commentary_of else None
         num = parent_number(clause.number, stream.separator)
         while num:
-            if stream.prefix + num in ids:
-                clause.parent_id = stream.prefix + num
+            if clause_id(stream, num) in ids:
+                clause.parent_id = clause_id(stream, num)
                 break
-            if fallback and fallback.prefix + num in ids:
-                clause.parent_id = fallback.prefix + num
+            if fallback and clause_id(fallback, num) in ids:
+                clause.parent_id = clause_id(fallback, num)
                 break
             num = parent_number(num, stream.separator)
+        if clause.parent_id is None and clause.container_id:
+            clause.parent_id = clause.container_id
 
 
 def low_coverage_ranges(seg: Segmentation, threshold: float = 0.5) -> list[tuple[int, int]]:

@@ -286,3 +286,7 @@ Build the spine end to end first (ingest FEMA, answer one traced question in a U
 6. Editable facts panel (fall back to read-only).
 
 Never cut: Pass 1, Pass 2 with crops, the agent with citations, the working-set graph, the demo video and README.
+
+## Known issues
+
+**Profile step: a rebuilt FEMA 356 profile is weaker than the committed one (Oct 17, 2026).** With the v3 rules prompt and the self-consistency checks (where-items, reference coverage, ids), the rebuilt FEMA profile passes validation but declares no heading level for depth 5. All 531 depth-5 headings are missed (1,352 of 1,883 found), and coverage stays at 97% because the depth-4 parent absorbs their text, so no check fails. Pass 1 with that profile: clauses 1,880 to 1,352; resolved references 2,678 to 2,293; coverage 99.3% to 97.3%. The committed profile (`fixtures/fema356_profile.json`) stays in use. Proposed fix, not yet built: a level-completeness check that numbered lines set in one of a stream's heading styles, at a depth with no level, fail validation (relative threshold), so the revision adds the missing level.

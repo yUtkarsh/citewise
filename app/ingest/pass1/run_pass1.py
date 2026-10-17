@@ -10,7 +10,7 @@ import pymupdf
 
 from app.ingest.pass1 import references as refs
 from app.ingest.pass1 import tables as tbl
-from app.ingest.pass1.blocks import load_context
+from app.ingest.pass1.blocks import is_footnote, load_context
 from app.ingest.pass1.crops import crop, safe_name
 from app.ingest.pass1.figures import find_figure
 from app.ingest.pass1.model import Clause, Equation, Figure, FlaggedLine, Reference, Table, WhereItem
@@ -35,6 +35,7 @@ class Pass1Result:
     timings: dict[str, float] = field(default_factory=dict)
     table_methods: Counter = field(default_factory=Counter)
     skipped_grids: int = 0
+    links_unresolved: int = 0
 
 
 def run_pass1(
@@ -57,6 +58,7 @@ def run_pass1(
     segments = tbl.extract_segments(doc, pdf, pdf_hash, table_pages, ctx.page_lines, use_docling, cache_dir, log)
     tbl.attach_captions(segments, ctx.page_lines, profile, ctx.body)
     tbl.add_borderless(segments, ctx.page_lines, profile, ctx.body, pages)
+    tbl.trim_notes(segments, ctx.page_lines, lambda line: is_footnote(line, ctx), profile.footnote.marker_regex)
     ordered = [s for p in pages for s in sorted(segments.get(p, []), key=lambda s: s.bbox[1])]
     tables, skipped = tbl.merge_segments(ordered)
     kept = {id(s) for t in tables for s in t.segments}
@@ -69,7 +71,7 @@ def run_pass1(
     for table in tables:
         for seg in table.segments:
             seg.table_id = table.id
-        tbl.build_rows(table, ctx.page_lines)
+        tbl.build_rows(table, ctx.page_lines, profile.footnote.marker_regex)
     tbl.attach_footnotes(tables, skel.blocks)
     _assign_owners(skel, tables)
     equations, where_items = _equations(skel)
@@ -81,7 +83,7 @@ def run_pass1(
     _flag_owners(skel, flagged)
     lap("crops")
 
-    references = _references(doc, pages, skel, profile, tables, equations, figures)
+    references, links_unresolved = _references(doc, pages, skel, profile, tables, equations, figures)
     lap("references")
 
     return Pass1Result(
@@ -89,6 +91,7 @@ def run_pass1(
         references=references, flagged=flagged, coverage=skel.seg.coverage,
         low_coverage=low_coverage_ranges(skel.seg), timings=timings,
         table_methods=Counter(s.method for t in tables for s in t.segments), skipped_grids=len(skipped),
+        links_unresolved=links_unresolved,
     )
 
 
@@ -174,14 +177,16 @@ def _flag_owners(skel: Skeleton, flagged: list[FlaggedLine]) -> None:
         line.clause_id = skel.seg.owner.get(id(block)) if block else None
 
 
-def _references(doc, pages, skel: Skeleton, profile: Profile, tables, equations, figures) -> list[Reference]:
+def _references(doc, pages, skel: Skeleton, profile: Profile, tables, equations, figures) -> tuple[list[Reference], int]:
     clauses = skel.seg.clauses
+    streams = {s.name: s for s in profile.streams}
     targets = refs.Targets(
         clause=[c.id for c in clauses], table=[t.id for t in tables], figure=[f.id for f in figures],
         equation=[e.id for e in equations], clause_depth={c.id: c.depth for c in clauses},
+        clause_namespace={c.id: streams[c.stream].id_prefix for c in clauses},
     )
-    found = refs.link_references(doc, pages, skel.blocks, skel.seg.owner, skel.ctx.page_lines)
+    found, links_unresolved = refs.link_references(doc, pages, skel.blocks, skel.seg.owner, skel.ctx.page_lines)
     for clause in clauses:
         found += refs.regex_references(clause.id, clause.text, clause.page, profile, targets)
         found += refs.external_codes(clause.id, clause.text, clause.page, profile)
-    return refs.dedupe(found)
+    return refs.dedupe(found), links_unresolved

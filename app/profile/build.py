@@ -13,8 +13,9 @@ from app.ingest.pass1.layout import assign_columns, reading_order
 from app.ingest.pdf_lines import read_lines
 from app.llm import CACHE_DIR, Transport, call_structured
 from app.prompts import load
+from app.profile.fonts import font_inventory
 from app.profile.page_map import PageSummary, render_page_map
-from app.profile.schema import PROFILE_SCHEMA_VERSION, Profile, ProfileRules, RangeLabels
+from app.profile.schema import PROFILE_SCHEMA_VERSION, SEGMENTED_KINDS, Profile, ProfileRules, RangeLabels
 from app.profile.validate import Report, validate
 
 PROFILE_DIR = ROOT / "data" / "profiles"
@@ -48,7 +49,13 @@ def rules_input(doc: pymupdf.Document, labels: RangeLabels) -> str:
     parts.append("# Sample pages")
     for p in labels.sample_pages:
         parts.append(f"## page {p}\n{styled_page(doc[p - 1])}")
+    parts.append(f"# Fonts on the body pages\n{fonts_section(doc, labels)}")
     return "\n\n".join(parts)
+
+
+def fonts_section(doc: pymupdf.Document, labels: RangeLabels) -> str:
+    pages = sorted({p for r in labels.ranges if r.kind in SEGMENTED_KINDS for p in range(r.start, r.end + 1)})
+    return font_inventory(doc, pages)
 
 
 def examples_present(sample_text: str):
@@ -90,7 +97,8 @@ def build_profile(
         return profile, report
 
     revise_input = (f"# Current rules\n{rules.model_dump_json(indent=1)}\n\n"
-                    f"# Validation result\n{report.failures}")
+                    f"# Validation result\n{report.failures}\n\n"
+                    f"# Fonts on the body pages\n{fonts_section(doc, labels)}")
     revised_rules = call_structured(
         model, load("profile_revise"), revise_input, ProfileRules, PROFILE_SCHEMA_VERSION,
         transport=transport, cache_dir=cache_dir,

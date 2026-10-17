@@ -71,6 +71,7 @@ def summary(result: Pass1Result, profile: Profile, counts: dict[str, int] | None
         "references_resolved": sum(1 for r in internal if r.target_id),
         "references_unresolved": sum(1 for r in internal if not r.target_id),
         "references_by_method": dict(Counter(r.method for r in internal if r.target_id)),
+        "links_unresolved": result.links_unresolved,
         "external_codes": len({r.target_id for r in refs if r.kind == "external"}),
         "flagged_lines": len(result.flagged),
         "flagged_by_reason": dict(reasons),
@@ -97,7 +98,8 @@ def print_summary(s: dict) -> None:
           f"{s['table_rows']} rows, grids {s['table_grid_methods']}, uncaptioned grids skipped {s['uncaptioned_grids_skipped']})")
     print(f"equations: {s['equations']} (where-items {s['where_items']})   figures: {s['figures']}")
     print(f"references: {s['references_resolved']} resolved, {s['references_unresolved']} unresolved "
-          f"{s['references_by_method']}; external codes {s['external_codes']}")
+          f"{s['references_by_method']}; external codes {s['external_codes']}; "
+          f"links that point nowhere in this file {s['links_unresolved']}")
     print(f"flagged lines: {s['flagged_lines']} {s['flagged_by_reason']}  top pages {s['flagged_top_pages']}")
     print(f"coverage: {s['coverage']:.1%}   low-coverage pages: {s['low_coverage_ranges']}")
     if s["graph_writes"]:

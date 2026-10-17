@@ -7,7 +7,7 @@ import pymupdf
 
 from app.profile.schema import Profile, ProfileRules
 
-FONTS = {"bold": "hebo", "body": "tiro", "sans": "helv"}
+FONTS = {"bold": "hebo", "body": "tiro", "sans": "helv", "boldit": "hebi"}
 PROSE = "This requirement applies to every structure covered by this part of the code"
 
 

@@ -1,7 +1,9 @@
 """Step 2.4: apply a profile to every body page and check it deterministically.
 
 Checks: heading order within each stream, hierarchy (every parent appears first),
-and coverage (share of body prose assigned to a clause whose heading is near).
+coverage (share of body prose assigned to a clause whose heading is near), caption
+style, unmapped fonts, and self-consistency (where-items, reference patterns and ids
+against what generic detectors find in the same text; see consistency.py).
 The failing spots are rendered as text for Claude's single revision.
 """
 from __future__ import annotations
@@ -13,10 +15,11 @@ import re
 
 import pymupdf
 
-from app.ingest.pdf_lines import is_bold
+from app.ingest.pdf_lines import base_font_name, is_bold
 from app.ingest.pass1.layout import reading_order
-from app.ingest.pass1.segment import Segmentation, low_coverage_ranges, number_key, parent_number
+from app.ingest.pass1.segment import Segmentation, clause_id, low_coverage_ranges, number_key, parent_number
 from app.ingest.pass1.skeleton import Skeleton, build_skeleton
+from app.profile.consistency import consistency_issues, id_mismatches, reference_share, where_share
 from app.profile.schema import Profile, Validation
 
 MIN_COVERAGE = 0.90
@@ -34,17 +37,20 @@ class Report:
 
 
 def order_issues(seg: Segmentation, profile: Profile) -> list[str]:
+    """Numbers never decrease within a stream; a nested stream restarts under each
+    clause that quotes it."""
     streams = {s.name: s for s in profile.streams}
-    last: dict[str, tuple[tuple, str]] = {}
+    last: dict[tuple, tuple[tuple, str]] = {}
     issues = []
     for clause in seg.clauses:
         if "~" in clause.id:
             continue
+        scope = (clause.stream, clause.container_id if streams[clause.stream].nested_in else None)
         key = number_key(clause.number, streams[clause.stream].separator)
-        if clause.stream in last and key < last[clause.stream][0]:
+        if scope in last and key < last[scope][0]:
             issues.append(f"order: p{clause.page} {clause.id} ({clause.title[:40]!r}) "
-                          f"comes after {last[clause.stream][1]}")
-        last[clause.stream] = (key, clause.id)
+                          f"comes after {last[scope][1]}")
+        last[scope] = (key, clause.id)
     return issues
 
 
@@ -57,11 +63,38 @@ def hierarchy_issues(seg: Segmentation, profile: Profile) -> list[str]:
     for clause in seg.clauses:
         stream = streams[clause.stream]
         parent = parent_number(clause.number, stream.separator)
-        if stream.kind == "provision" and parent and stream.prefix + parent not in seen:
+        if stream.nested_in:  # quoted sections may start at any depth, but need a quoting clause
+            if clause.container_id is None:
+                issues.append(f"hierarchy: p{clause.page} {clause.id} ({clause.title[:40]!r}) "
+                              f"appears before any {stream.nested_in} clause that could quote it")
+        elif stream.kind == "provision" and parent and clause_id(stream, parent) not in seen:
             issues.append(f"hierarchy: p{clause.page} {clause.id} ({clause.title[:40]!r}) "
-                          f"has no earlier parent {stream.prefix + parent}")
+                          f"has no earlier parent {clause_id(stream, parent)}")
         seen.add(clause.id)
     return issues
+
+
+def font_issues(skel: Skeleton, profile: Profile) -> list[str]:
+    """Every unmapped-font pattern must name a font that occurs in the document."""
+    fonts = {base_font_name(s["font"]) for lines in skel.ctx.page_lines.values() for ln in lines for s in ln.spans}
+    return [f"fonts: unmapped_fonts pattern {pattern!r} matches no font in the document"
+            for pattern in profile.unmapped_fonts if not any(re.search(pattern, f) for f in fonts)]
+
+
+def style_census(skel: Skeleton, profile: Profile) -> list[str]:
+    """Heading styles per stream and depth, with counts and one example each, so a
+    style that only one odd heading uses stands out."""
+    by_level: dict[tuple, dict[str, list[str]]] = defaultdict(lambda: defaultdict(list))
+    for blocks in skel.blocks.values():
+        for b in blocks:
+            if b.kind == "heading":
+                depth = len(b.number.split(next(s.separator for s in profile.streams if s.name == b.stream)))
+                by_level[(b.stream, depth)][b.style].append(f"p{b.page} {b.number} {(b.title or '')[:40]!r}")
+    out = []
+    for (stream, depth), styles in sorted(by_level.items()):
+        for style, examples in sorted(styles.items(), key=lambda kv: -len(kv[1])):
+            out.append(f"  {stream} depth {depth}: [{style}] x{len(examples)}, e.g. {examples[0]}")
+    return out
 
 
 def commentary_issues(seg: Segmentation) -> list[str]:
@@ -115,23 +148,33 @@ def validate(doc: pymupdf.Document, profile: Profile, skeleton: Skeleton | None 
     hierarchy = hierarchy_issues(seg, profile)
     unmatched = commentary_issues(seg)
     caption_count, captions = caption_issues(skel, profile)
+    fonts = font_issues(skel, profile)
+    consistency, examples = consistency_issues(skel, profile)
     low = low_coverage_ranges(seg)
     heads = len(seg.clauses)
     tolerated = max(MIN_VIOLATIONS, VIOLATION_SHARE * heads)
     captions_ok = len(captions) <= max(MIN_VIOLATIONS, VIOLATION_SHARE * caption_count)
-    passed = (heads > 0 and seg.coverage >= MIN_COVERAGE and captions_ok
+    passed = (heads > 0 and seg.coverage >= MIN_COVERAGE and captions_ok and not fonts and not consistency
               and len(order) <= tolerated and len(hierarchy) <= tolerated)
-    issues = (order + hierarchy + captions[:15] + seg.duplicates + unmatched)[:MAX_ISSUES]
+    issues = (consistency + examples + fonts + order + hierarchy + captions[:15] + seg.duplicates
+              + unmatched)[:MAX_ISSUES]
     validation = Validation(
         status="pass" if passed else "warning", coverage=round(seg.coverage, 4), heading_count=heads,
         order_violations=len(order), hierarchy_violations=len(hierarchy),
-        low_coverage_ranges=low, revised=False, issues=issues,
+        low_coverage_ranges=low, revised=False, issues=issues, checks=check_shares(skel, profile),
     )
-    failures = "" if passed else render_failures(skel, validation, low)
+    failures = "" if passed else render_failures(skel, validation, low, profile)
     return Report(validation, failures, skel)
 
 
-def render_failures(skel: Skeleton, validation: Validation, low: list[tuple[int, int]]) -> str:
+def check_shares(skel: Skeleton, profile: Profile) -> dict[str, float]:
+    text = "\n".join(c.text for c in skel.seg.clauses)
+    return {"where_items": round(where_share(skel, profile)[0].share, 4),
+            "references": round(reference_share(text, profile)[0].share, 4),
+            "ids": round(id_mismatches(skel, profile)[0].share, 4)}
+
+
+def render_failures(skel: Skeleton, validation: Validation, low: list[tuple[int, int]], profile: Profile) -> str:
     out = [f"coverage {validation.coverage:.1%} (needs {MIN_COVERAGE:.0%}); headings found: "
            f"{validation.heading_count}; order violations: {validation.order_violations}; "
            f"hierarchy violations: {validation.hierarchy_violations}"]
@@ -139,6 +182,8 @@ def render_failures(skel: Skeleton, validation: Validation, low: list[tuple[int,
     for clause in skel.seg.clauses:
         per_stream[clause.stream] += 1
     out.append("headings per stream: " + ", ".join(f"{k}={v}" for k, v in per_stream.items()))
+    out.append("\nHeading styles found, per stream and depth:")
+    out += style_census(skel, profile)
     if validation.issues:
         out.append("\nIssues:")
         out += [f"- {issue}" for issue in validation.issues]

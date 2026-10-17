@@ -34,13 +34,16 @@ def table_scopes(tables: list[Table], page_lines: dict[int, list[Line]], profile
     return out
 
 
-def line_reasons(line: Line, scope: set[str]) -> list[str]:
+def line_reasons(line: Line, scope: set[str], profile: Profile) -> list[str]:
     reasons = []
     classes = sorted({tc.char_class(c) for s in line.spans for c in tc.bad_chars(s)})
     reasons += classes
     if any(tc.ascii_from_symbol_font(s) for s in line.spans):
         reasons.append("symbol_font_ascii")
-    reasons += [f"unexplained_superscript:{m}" for m, _ in tc.superscripts(line) if not tc.is_footnote_reference(m, scope)]
+    if any(tc.text_from_unmapped_font(s, profile.unmapped_fonts) for s in line.spans):
+        reasons.append("unmapped_font")
+    reasons += [f"unexplained_superscript:{m}" for m, _ in tc.superscripts(line, profile.footnote.marker_regex)
+                if not tc.is_footnote_reference(m, scope)]
     return reasons
 
 
@@ -56,7 +59,7 @@ def flag_lines(page_lines: dict[int, list[Line]], tables: list[Table], profile: 
             for box, markers in page_tables:
                 if _inside(line, box):
                     scope |= markers
-            reasons = line_reasons(line, scope)
+            reasons = line_reasons(line, scope, profile)
             if reasons:
                 flagged.append(FlaggedLine(id=f"p{page}:l{n}", page=page, bbox=line.bbox,
                                            text=line.text.strip(), reasons=reasons))

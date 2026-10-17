@@ -34,6 +34,7 @@ class Clause:
     bbox: Rect
     parent_id: str | None = None
     commentary_on: str | None = None
+    container_id: str | None = None  # for a nested stream: the clause that quotes it
     page_end: int = 0
     text_parts: list[str] = field(default_factory=list)
     text: str = ""

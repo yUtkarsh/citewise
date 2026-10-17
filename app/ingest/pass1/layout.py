@@ -5,6 +5,7 @@ from collections import Counter
 import re
 
 from app.ingest.pdf_lines import Line
+from app.ingest.text_checks import is_unmapped_font
 from app.profile.schema import Profile
 
 RUNNING_BAND = 0.08  # top and bottom fraction of the page height
@@ -91,6 +92,15 @@ def normalize(text: str) -> str:
     for src, dst in {**LIGATURES, **SYMBOLS}.items():
         text = text.replace(src, dst)
     return text
+
+
+def normalize_line(line: Line, unmapped_fonts: list[str]) -> str:
+    """Normalized line text, except spans from unmapped fonts: their characters are
+    not what is printed (a radical drawn as ligatures), so they stay raw and flagged."""
+    def clean(span: dict, text: str) -> str:
+        return text if is_unmapped_font(span["font"], unmapped_fonts) else normalize(text)
+
+    return line.joined(clean)
 
 
 def vocabulary(texts: list[str]) -> set[str]:

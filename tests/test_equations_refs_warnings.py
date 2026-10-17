@@ -80,7 +80,7 @@ def test_link_annotations_resolve_to_the_heading_they_point_at(tmp_path):
     doc.saveIncr()
     profile = syn.profile(2)
     skel = build_skeleton(doc, profile)
-    links = refs.link_references(doc, [1, 2], skel.blocks, skel.seg.owner, skel.ctx.page_lines)
+    links, _ = refs.link_references(doc, [1, 2], skel.blocks, skel.seg.owner, skel.ctx.page_lines)
     assert [(r.source_id, r.target_id, r.method) for r in links] == [("1", "2", "link")]
     assert "Section 2" in links[0].text
 

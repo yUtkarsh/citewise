@@ -10,7 +10,7 @@ from typing import Literal
 
 from pydantic import BaseModel, field_validator, model_validator
 
-PROFILE_SCHEMA_VERSION = "profile-v1"
+PROFILE_SCHEMA_VERSION = "profile-v2"
 
 RangeKind = Literal[
     "front_matter", "toc", "notation", "definitions", "body", "commentary", "appendix",
@@ -110,6 +110,8 @@ class Stream(BaseModel):
     separator: str  # between number components, e.g. "."
     commentary_of: str | None  # for commentary: name of the provision stream
     levels: list[Level]
+    id_prefix: str = ""  # namespace for clause ids when numbers repeat across streams, e.g. a quoted standard
+    nested_in: str | None = None  # stream whose current clause contains this stream's clauses
     examples: list[str]  # heading numbers exactly as printed on the sample pages
 
     @field_validator("number_regex")
@@ -145,11 +147,17 @@ class CaptionFormat(BaseModel):
 class FootnoteFormat(BaseModel):
     line_regex: str  # matched at the start of a footnote line; group "marker"
     marker_superscript: bool  # footnote lines may instead start with a raised marker
+    marker_regex: str = r"\d{1,2}"  # shape of one marker, e.g. a digit or a lowercase letter
 
     @field_validator("line_regex")
     @classmethod
     def check_pattern(cls, v):
         return check_regex(v, ("marker",))
+
+    @field_validator("marker_regex")
+    @classmethod
+    def check_marker(cls, v):
+        return check_regex(v)
 
 
 class WhereBlock(BaseModel):
@@ -205,6 +213,7 @@ class ProfileRules(BaseModel):
     list_connectors: list[str]
     range_connectors: list[str]
     external_code_regex: str  # group "code"
+    unmapped_fonts: list[str] = []  # font-name regexes whose glyphs come out as wrong characters
 
     @field_validator("equation_number")
     @classmethod
@@ -215,9 +224,20 @@ class ProfileRules(BaseModel):
     def check_ext(cls, v):
         return check_regex(v, ("code",))
 
+    @field_validator("unmapped_fonts")
+    @classmethod
+    def check_fonts(cls, v):
+        return [check_regex(p) for p in v]
+
     @model_validator(mode="after")
     def streams_consistent(self) -> "ProfileRules":
         names = {s.name for s in self.streams}
+        for s in self.streams:
+            if s.nested_in is not None and (s.nested_in not in names or s.nested_in == s.name):
+                raise ValueError(f"stream {s.name}: nested_in {s.nested_in!r} is not another stream")
+        ids = [(s.id_prefix, s.prefix) for s in self.streams]
+        if len(set(ids)) != len(ids):
+            raise ValueError("two streams would produce the same clause ids; give one an id_prefix")
         if not any(s.kind == "provision" for s in self.streams):
             raise ValueError("at least one provision stream is required")
         for s in self.streams:
@@ -237,6 +257,7 @@ class Validation(BaseModel):
     low_coverage_ranges: list[tuple[int, int]]
     revised: bool
     issues: list[str]
+    checks: dict[str, float] = {}  # self-consistency shares (where_items, references, ids)
 
 
 class Profile(ProfileRules):

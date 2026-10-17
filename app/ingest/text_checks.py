@@ -5,11 +5,15 @@ Rules:
 1. A font is never a warning by itself (Symbol is fine). A span is a warning when
    it yields private-use (U+E000-F8FF), control (< U+0020, Cc/Cf) or U+FFFD chars.
 2. An ASCII letter or digit drawn in a symbol or math font is a warning: the glyph
-   was probably not mapped to its real Unicode symbol.
-3. A small raised digit after a letter is a footnote marker when a footnote with
+   was probably not mapped to its real Unicode symbol. Fonts are recognised by common
+   family names, or listed by the document profile as unmapped (opaque font names
+   whose glyphs come out as wrong letters, digits or ligatures); for those, any letter
+   or digit is a warning.
+3. A small raised marker after a letter is a footnote marker when a footnote with
    that marker exists in its scope: the page, or every page of a merged table for
    markers inside that table. Otherwise it is an unexplained superscript. What a
-   footnote line looks like comes from the document profile (``FootnoteFormat``).
+   footnote line and a marker look like come from the document profile
+   (``FootnoteFormat``); markers may be listed together ("a,b").
 
 Spans are PyMuPDF ``dict`` spans (``text``) or ``rawdict`` spans (``chars``);
 lines are PyMuPDF line dicts or ``app.ingest.pdf_lines.Line`` objects.
@@ -24,7 +28,8 @@ import unicodedata
 SUPERSCRIPT_FLAG = 1  # PyMuPDF span flag bit 0
 SMALL_SIZE_RATIO = 0.8  # superscript digit vs. preceding text
 SIZE_TOLERANCE = 0.1  # points; footnote text may equal the body size on table pages
-RAISED_START = re.compile(r"^\s*(\d{1,2})\s*$")
+MIN_NOTE_CHARS = 3  # a footnote says something; a lone subscript fragment ("cE") does not
+DEFAULT_MARKER = r"\d{1,2}"  # used when no profile says otherwise (font check, old profiles)
 ASCII_ALNUM = re.compile(r"[A-Za-z0-9]")
 # Font families whose glyphs are symbols, not letters (generic, not document-specific).
 SYMBOL_FONT = re.compile(r"symbol|math|mt ?extra|^cms[yl]|^cmmi|^cmex|^msam|^msbm|wingding|dingbat|webding",
@@ -36,6 +41,7 @@ Span = dict
 class FootnoteFormat(Protocol):
     line_regex: str
     marker_superscript: bool
+    marker_regex: str
 
 
 def is_private_use(ch: str) -> bool:
@@ -87,6 +93,19 @@ def ascii_from_symbol_font(span: Span, symbolic_fonts: Iterable[str] = ()) -> bo
     return is_symbol_font(span["font"], symbolic_fonts) and bool(ASCII_ALNUM.search(span_text(span)))
 
 
+def is_unmapped_font(font: str, unmapped: Iterable[str]) -> bool:
+    """True if the font matches one of the profile's unmapped-font patterns."""
+    base = font.split("+", 1)[-1] if re.match(r"^[A-Z]{6}\+", font) else font
+    return any(re.search(pattern, base) for pattern in unmapped)
+
+
+def text_from_unmapped_font(span: Span, unmapped: Iterable[str]) -> bool:
+    """Rule 2, profile part: any letter or digit (ligatures and accented letters
+    included) from a font whose glyphs are not mapped to what is printed."""
+    return is_unmapped_font(span["font"], unmapped) and any(
+        unicodedata.category(c)[0] in "LN" for c in span_text(span))
+
+
 def body_size(lines: list) -> float:
     """Most common character size on the page, i.e. the body text size."""
     sizes = Counter()
@@ -96,11 +115,15 @@ def body_size(lines: list) -> float:
     return sizes.most_common(1)[0][0] if sizes else 0.0
 
 
-def superscript_marker(prev: Span, span: Span) -> str | None:
-    """The digit marker if ``span`` is a small raised digit right after a letter."""
+def superscript_marker(prev: Span, span: Span, marker_regex: str = DEFAULT_MARKER) -> str | None:
+    """The marker text if ``span`` is small and raised right after a letter and every
+    comma-separated part of it has the profile's marker shape ("2", "a", "a,b")."""
     text = span_text(span).strip()
     prev_text = span_text(prev).rstrip()
-    if not text.isdigit() or not prev_text or not prev_text[-1].isalpha():
+    parts = [p.strip() for p in text.split(",")]
+    if not text or not all(re.fullmatch(marker_regex, p) for p in parts):
+        return None
+    if not prev_text or not prev_text[-1].isalpha():
         return None
     flagged = bool(span["flags"] & SUPERSCRIPT_FLAG)
     smaller = span["size"] < prev["size"] * SMALL_SIZE_RATIO
@@ -108,10 +131,15 @@ def superscript_marker(prev: Span, span: Span) -> str | None:
     return text if flagged or (smaller and raised) else None
 
 
-def superscripts(line) -> list[tuple[str, Span]]:
-    """(marker, span) for every superscript digit after a letter in this line."""
+def superscripts(line, marker_regex: str = DEFAULT_MARKER) -> list[tuple[str, Span]]:
+    """(marker, span) for every superscript marker after a letter in this line; a
+    listed marker ("a,b") gives one entry per marker."""
     spans = line_spans(line)
-    return [(m, s) for prev, s in zip(spans, spans[1:]) if (m := superscript_marker(prev, s))]
+    out = []
+    for prev, span in zip(spans, spans[1:]):
+        if marker := superscript_marker(prev, span, marker_regex):
+            out.extend((part.strip(), span) for part in marker.split(","))
+    return out
 
 
 def footnote_marker(line, page_body_size: float, fmt: FootnoteFormat) -> str | None:
@@ -126,10 +154,15 @@ def footnote_marker(line, page_body_size: float, fmt: FootnoteFormat) -> str | N
     # Line objects insert spaces at visible gaps between spans; raw dict lines do not
     text = "".join(span_text(s) for s in spans) if isinstance(line, dict) else line.text
     if match := re.match(fmt.line_regex, text.lstrip()):
-        return match.group("marker")
+        # a marker alone (its note printed as a separate line) or with a real note; a
+        # marker followed by a one- or two-character fragment is a subscript ("cE")
+        chars = sum(c.isalnum() for c in text.lstrip()[match.end("marker"):])
+        return match.group("marker") if chars == 0 or chars >= MIN_NOTE_CHARS else None
     raised = bool(first["flags"] & SUPERSCRIPT_FLAG)
-    if fmt.marker_superscript and raised and len(spans) > 1 and (match := RAISED_START.match(span_text(first))):
-        return match.group(1)
+    marker = span_text(first).strip()
+    shape = getattr(fmt, "marker_regex", DEFAULT_MARKER)
+    if fmt.marker_superscript and raised and len(spans) > 1 and re.fullmatch(shape, marker):
+        return marker
     return None
 
 

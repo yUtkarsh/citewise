@@ -2,7 +2,7 @@
 profile's reference words and number formats, expanding lists and ranges."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import re
 
 import pymupdf
@@ -23,6 +23,7 @@ class Targets:
     figure: list[str]
     equation: list[str]
     clause_depth: dict[str, int]
+    clause_namespace: dict[str, str] = field(default_factory=dict)  # clause id -> its stream's id_prefix
 
     def ordered(self, kind: str) -> list[str]:
         return getattr(self, kind)
@@ -82,12 +83,27 @@ def regex_references(source_id: str, text: str, page: int, profile: Profile, tar
             for target, cited in expand(kind, match.group("nums"), profile, targets):
                 if target == source_id:
                     continue
-                resolved = target if target in known[kind.kind] else None
+                namespace = targets.clause_namespace.get(source_id, "") if kind.kind == "clause" else ""
+                resolved = (namespace and resolve_id(namespace + target, known[kind.kind], kind.kind)) \
+                    or resolve_id(target, known[kind.kind], kind.kind)
                 refs.append(Reference(source_id, match.group(0) if cited in match.group(0) else cited,
                                       kind.kind, resolved, "regex", page))
                 if resolved is None:
                     refs[-1].text = f"{match.group(0)} -> {target}"
     return refs
+
+
+SUB_PANEL = re.compile(r"^(?P<base>.*\d)[a-z]$")  # "Figure 3-2b" is panel b of "Figure 3-2"
+
+
+def resolve_id(target: str, known: set[str], kind: str) -> str | None:
+    """The node id a citation points at. A table or figure cited with a panel letter
+    resolves to the table or figure itself when only that exists."""
+    if target in known:
+        return target
+    if kind in ("table", "figure") and (match := SUB_PANEL.match(target)) and match.group("base") in known:
+        return match.group("base")
+    return None
 
 
 def external_codes(source_id: str, text: str, page: int, profile: Profile) -> list[Reference]:
@@ -138,25 +154,46 @@ def _text_under(lines: list[Line], rect) -> str:
     return " ".join(t for t in out if t)
 
 
+def link_destination(link: dict, names: dict) -> tuple[int, float, float] | None:
+    """(1-based page, x, y) a link jumps to: a direct page link, or a named
+    destination looked up in the document's name tree. None when it cannot be resolved
+    (another file, a web address, or a name the document does not define)."""
+    if link.get("kind") == pymupdf.LINK_GOTO and link.get("page", -1) >= 0:
+        to = link.get("to") or pymupdf.Point(0, 0)
+        return link["page"] + 1, to.x, to.y
+    if link.get("kind") == pymupdf.LINK_NAMED:
+        dest = names.get(link.get("nameddest") or link.get("name") or "")
+        if dest and dest.get("page", -1) >= 0:
+            x, y = (dest.get("to") or (0, 0))[:2]
+            return dest["page"] + 1, float(x), float(y)
+    return None
+
+
 def link_references(doc: pymupdf.Document, pages: list[int], blocks: dict[int, list[Block]],
-                    owner: dict[int, str | None], page_lines: dict[int, list[Line]]) -> list[Reference]:
-    refs = []
+                    owner: dict[int, str | None], page_lines: dict[int, list[Line]]) -> tuple[list[Reference], int]:
+    """References from link annotations, and the number of internal links that could
+    not be resolved (named destinations missing from the document)."""
+    names = doc.resolve_names() if hasattr(doc, "resolve_names") else {}
+    refs, unresolved = [], 0
     for page in pages:
         pg = doc[page - 1]
         for link in pg.get_links():
-            if link.get("kind") != pymupdf.LINK_GOTO or link.get("page", -1) < 0:
+            if link.get("kind") not in (pymupdf.LINK_GOTO, pymupdf.LINK_NAMED):
                 continue
-            target_page = link["page"] + 1
+            dest = link_destination(link, names)
+            if dest is None:
+                unresolved += 1
+                continue
+            target_page, x, y = dest
             if target_page not in blocks:
                 continue
             rect = link["from"]
             source = _owner_at(blocks[page], owner, (rect.x0 + rect.x1) / 2, (rect.y0 + rect.y1) / 2)
-            to = link.get("to") or pymupdf.Point(0, 0)
-            kind, target = _target_at(blocks[target_page], owner, to.x, to.y)
+            kind, target = _target_at(blocks[target_page], owner, x, y)
             if source and target and source != target:
                 text = _text_under(page_lines.get(page, []), rect) or f"link to p{target_page}"
                 refs.append(Reference(source, text, kind, target, "link", page))
-    return refs
+    return refs, unresolved
 
 
 def dedupe(refs: list[Reference]) -> list[Reference]:
