@@ -79,3 +79,5 @@ Load with python-dotenv inside the app. Do not export ANTHROPIC_API_KEY in the s
 - Never commit anything from `private_fixtures/` or `data/`.
 - Write a test with a fixture page for each new extraction function.
 - Keep functions small and typed; prefer clear code over clever code.
+- No document-specific logic outside the profile. Heading, caption, equation-number and running-element patterns always come from the document profile; never hard-code patterns from FEMA 356 or any other document. Tests should mostly check document-independent behaviour (ordering, coverage, numeric matches, crops for flagged lines) rather than exact strings from one document.
+- Tests that use files in `private_fixtures/` must skip cleanly when the files are missing (use the `private_fixture` fixture from `tests/conftest.py`).
