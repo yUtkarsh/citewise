@@ -5,7 +5,9 @@ import pymupdf
 import pytest
 
 from app.ingest import text_checks as tc
+from app.profile.schema import FootnoteFormat
 
+FOOTNOTE = FootnoteFormat(line_regex=r"^(?P<marker>\d{1,2})\.(\s|$)", marker_superscript=True)
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
 
 
@@ -56,7 +58,21 @@ def test_clean_fixture_has_no_warning_spans():
     assert not any(tc.bad_chars(s) for ln in page_lines("text.pdf") for s in ln["spans"])
 
 
-# Rule 2: superscripts explained by a footnote on the same page
+# Rule 2: ASCII letters or digits from a symbol or math font
+
+def test_ascii_from_symbol_font():
+    assert tc.ascii_from_symbol_font(span("q", font="Symbol"))
+    assert tc.ascii_from_symbol_font(span("7", font="ABCDEF+CambriaMath"))
+    assert not tc.ascii_from_symbol_font(span("θ ≤", font="Symbol"))
+    assert not tc.ascii_from_symbol_font(span("q", font="Times-Roman"))
+    assert tc.ascii_from_symbol_font(span("x", font="CustomFont"), symbolic_fonts={"CustomFont"})
+
+
+def test_dict_and_rawdict_spans_read_the_same():
+    assert tc.span_text({"text": "ab"}) == tc.span_text({"chars": [{"c": "a"}, {"c": "b"}]})
+
+
+# Rule 3: superscripts explained by a footnote in their scope
 
 def test_superscript_after_letter():
     assert tc.superscript_marker(span("Damage"), span("1", size=6.0, y=96.0)) == "1"
@@ -67,29 +83,30 @@ def test_superscript_after_letter():
 
 def test_footnote_line_needs_period_or_raised_marker():
     body = 9.0
-    assert tc.footnote_marker(line(span("1.", size=7.9), span("Footnote text", size=7.9)), body) == "1"
-    assert tc.footnote_marker(line(span("12. Values are", size=9.0)), body) == "12"  # table page: same size
-    assert tc.footnote_marker(line(span("3", flags=tc.SUPERSCRIPT_FLAG), span("Text")), body) == "3"
-    assert tc.footnote_marker(line(span("3", size=9.0)), body) is None  # table cell
-    assert tc.footnote_marker(line(span("12", size=7.9), span("EI")), body) is None  # equation term
-    assert tc.footnote_marker(line(span("1. Heading", size=12.0)), body) is None  # larger than body
+    fm = lambda ln: tc.footnote_marker(ln, body, FOOTNOTE)  # noqa: E731
+    assert fm(line(span("1.", size=7.9), span(" Footnote text", size=7.9))) == "1"
+    assert fm(line(span("12. Values are", size=9.0))) == "12"  # table page: same size
+    assert fm(line(span("3", flags=tc.SUPERSCRIPT_FLAG), span("Text"))) == "3"
+    assert fm(line(span("3", size=9.0))) is None  # table cell
+    assert fm(line(span("12", size=7.9), span("EI"))) is None  # equation term
+    assert fm(line(span("1. Heading", size=12.0))) is None  # larger than body
 
 
-def test_footnote_must_be_below_reference():
-    footnotes = {"1": 600.0}
-    assert tc.is_footnote_reference("1", span("1", y=300.0), footnotes)
-    assert not tc.is_footnote_reference("1", span("1", y=700.0), footnotes)
-    assert not tc.is_footnote_reference("2", span("1", y=300.0), footnotes)
+def test_footnote_format_comes_from_the_profile():
+    lettered = FootnoteFormat(line_regex=r"^(?P<marker>[a-z])\)\s", marker_superscript=False)
+    assert tc.footnote_marker(line(span("b) Applies to")), 9.0, lettered) == "b"
+    assert tc.footnote_marker(line(span("1. Applies to")), 9.0, lettered) is None
+    assert tc.footnote_marker(line(span("3", flags=tc.SUPERSCRIPT_FLAG), span("Text")), 9.0, lettered) is None
+
+
+def test_footnote_reference_is_scope_membership():
+    assert tc.is_footnote_reference("1", {"1", "2"})
+    assert not tc.is_footnote_reference("3", {"1", "2"})
 
 
 def test_table_fixture_superscripts_are_explained():
     lines = page_lines("table.pdf")
-    footnotes = tc.footnote_markers(lines)
-    markers = [
-        (m, s)
-        for ln in lines
-        for prev, s in zip(ln["spans"], ln["spans"][1:])
-        if (m := tc.superscript_marker(prev, s))
-    ]
+    footnotes = tc.footnote_markers(lines, FOOTNOTE)
+    markers = [m for ln in lines for m, _ in tc.superscripts(ln)]
     assert markers
-    assert all(tc.is_footnote_reference(m, s, footnotes) for m, s in markers)
+    assert all(tc.is_footnote_reference(m, footnotes) for m in markers)

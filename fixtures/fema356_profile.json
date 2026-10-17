@@ -1,0 +1,384 @@
+{
+  "title": "Prestandard and Commentary for the Seismic Rehabilitation of Buildings",
+  "edition": "FEMA 356 / November 2000",
+  "jurisdiction": "Federal Emergency Management Agency",
+  "self_designation": "FEMA 356",
+  "streams": [
+    {
+      "name": "provision",
+      "kind": "provision",
+      "number_regex": "^(?P<num>\\d+(?:\\.\\d+)*)\\.?(?:\\s+|$)",
+      "prefix": "",
+      "separator": ".",
+      "commentary_of": null,
+      "levels": [
+        {
+          "depth": 1,
+          "style": {
+            "font_regex": "^Times-Bold$",
+            "size_min": 42.0,
+            "size_max": 44.5,
+            "bold": true
+          }
+        },
+        {
+          "depth": 2,
+          "style": {
+            "font_regex": "^Times-Bold$",
+            "size_min": 13.4,
+            "size_max": 14.4,
+            "bold": true
+          }
+        },
+        {
+          "depth": 3,
+          "style": {
+            "font_regex": "^Times-Bold$",
+            "size_min": 11.7,
+            "size_max": 12.3,
+            "bold": true
+          }
+        },
+        {
+          "depth": 4,
+          "style": {
+            "font_regex": "^Helvetica-Bold$",
+            "size_min": 10.3,
+            "size_max": 10.8,
+            "bold": true
+          }
+        },
+        {
+          "depth": 5,
+          "style": {
+            "font_regex": "^Helvetica-Bold$",
+            "size_min": 9.2,
+            "size_max": 10.2,
+            "bold": true
+          }
+        }
+      ],
+      "examples": [
+        "1.1",
+        "1.6.1.5",
+        "2.2.6",
+        "5.3.2.1.1"
+      ]
+    },
+    {
+      "name": "commentary",
+      "kind": "commentary",
+      "number_regex": "^C(?P<num>\\d+(?:\\.\\d+)*)\\.?(?:\\s+|$)",
+      "prefix": "C",
+      "separator": ".",
+      "commentary_of": "provision",
+      "levels": [
+        {
+          "depth": 1,
+          "style": {
+            "font_regex": "^Times-Bold$",
+            "size_min": 13.4,
+            "size_max": 14.4,
+            "bold": true
+          }
+        },
+        {
+          "depth": 2,
+          "style": {
+            "font_regex": "^Times-Bold$",
+            "size_min": 13.4,
+            "size_max": 14.4,
+            "bold": true
+          }
+        },
+        {
+          "depth": 3,
+          "style": {
+            "font_regex": "^Times-Bold$",
+            "size_min": 11.7,
+            "size_max": 12.3,
+            "bold": true
+          }
+        },
+        {
+          "depth": 4,
+          "style": {
+            "font_regex": "^Helvetica-Bold$",
+            "size_min": 10.3,
+            "size_max": 10.8,
+            "bold": true
+          }
+        },
+        {
+          "depth": 5,
+          "style": {
+            "font_regex": "^Helvetica-Bold$",
+            "size_min": 9.2,
+            "size_max": 10.2,
+            "bold": true
+          }
+        }
+      ],
+      "examples": [
+        "C1.1",
+        "C5.3.1",
+        "C5.3.2.1"
+      ]
+    },
+    {
+      "name": "appendix",
+      "kind": "provision",
+      "number_regex": "^A\\.(?P<num>\\d+(?:\\.\\d+)*)\\.?(?:\\s+|$)",
+      "prefix": "A.",
+      "separator": ".",
+      "commentary_of": null,
+      "levels": [
+        {
+          "depth": 1,
+          "style": {
+            "font_regex": "^Times-Bold$",
+            "size_min": 13.4,
+            "size_max": 14.4,
+            "bold": true
+          }
+        },
+        {
+          "depth": 2,
+          "style": {
+            "font_regex": "^Times-Bold$",
+            "size_min": 11.7,
+            "size_max": 12.3,
+            "bold": true
+          }
+        }
+      ],
+      "examples": [
+        "A.1",
+        "A.2",
+        "A.2.1"
+      ]
+    }
+  ],
+  "table_caption": {
+    "regex": "^Table\\s+(?P<num>C?\\d+-\\d+[A-Za-z]?)\\.?(?:\\s|$)",
+    "continued_regex": "(?i)continued",
+    "style": {
+      "font_regex": "^Helvetica-BoldOblique$",
+      "size_min": 8.7,
+      "size_max": 10.3,
+      "bold": true
+    }
+  },
+  "figure_caption": {
+    "regex": "^Figure\\s+(?P<num>C?\\d+-\\d+[A-Za-z]?)\\.?(?:\\s|$)",
+    "continued_regex": "(?i)continued",
+    "style": {
+      "font_regex": "^Helvetica-BoldOblique$",
+      "size_min": 8.7,
+      "size_max": 10.3,
+      "bold": true
+    }
+  },
+  "equation_number": "\\((?P<num>C?\\d+-\\d+[A-Za-z]?)\\)",
+  "footnote": {
+    "line_regex": "^(?P<marker>\\d+)\\.?\\s+\\S",
+    "marker_superscript": true
+  },
+  "where_block": {
+    "intro_regex": "^[Ww]here\\b",
+    "item_regex": "^(?P<symbol>\\S+)\\s*=\\s*(?P<definition>.+)"
+  },
+  "running_elements": [
+    {
+      "regex": "^FEMA 356$",
+      "zone": "bottom"
+    },
+    {
+      "regex": "^Seismic Rehabilitation Prestandard$",
+      "zone": "bottom"
+    },
+    {
+      "regex": "^(?:[A-Z]|\\d+)-\\d+$",
+      "zone": "bottom"
+    },
+    {
+      "regex": "^Chapter \\d+: .+$",
+      "zone": "top"
+    }
+  ],
+  "references": [
+    {
+      "kind": "clause",
+      "words": [
+        "Section",
+        "Sections",
+        "Chapter",
+        "Chapters"
+      ],
+      "number_regex": "(?:C|A\\.)?\\d+(?:\\.\\d+)*"
+    },
+    {
+      "kind": "table",
+      "words": [
+        "Table",
+        "Tables"
+      ],
+      "number_regex": "C?\\d+-\\d+[A-Za-z]?"
+    },
+    {
+      "kind": "figure",
+      "words": [
+        "Figure",
+        "Figures"
+      ],
+      "number_regex": "C?\\d+-\\d+[A-Za-z]?"
+    },
+    {
+      "kind": "equation",
+      "words": [
+        "Equation",
+        "Equations"
+      ],
+      "number_regex": "\\(?C?\\d+-\\d+[A-Za-z]?\\)?"
+    }
+  ],
+  "list_connectors": [
+    ",",
+    "and",
+    "or"
+  ],
+  "range_connectors": [
+    "through",
+    "to",
+    "–",
+    "-"
+  ],
+  "external_code_regex": "(?P<code>\\b(?:ASTM|AWS|ACI|AISC|AISI|ASCE|NFPA|UBC|NEHRP|ANSI|AASHTO|ICBO|SEAOC|TMS|FEMA)\\s+[A-Z]?\\d+[A-Za-z0-9/.\\-]*)",
+  "schema_version": "profile-v1",
+  "page_count": 518,
+  "ranges": [
+    {
+      "start": 1,
+      "end": 12,
+      "kind": "front_matter"
+    },
+    {
+      "start": 13,
+      "end": 22,
+      "kind": "toc"
+    },
+    {
+      "start": 23,
+      "end": 460,
+      "kind": "body"
+    },
+    {
+      "start": 461,
+      "end": 466,
+      "kind": "appendix"
+    },
+    {
+      "start": 467,
+      "end": 482,
+      "kind": "notation"
+    },
+    {
+      "start": 483,
+      "end": 484,
+      "kind": "notation"
+    },
+    {
+      "start": 485,
+      "end": 494,
+      "kind": "definitions"
+    },
+    {
+      "start": 495,
+      "end": 504,
+      "kind": "references"
+    },
+    {
+      "start": 505,
+      "end": 510,
+      "kind": "toc"
+    },
+    {
+      "start": 511,
+      "end": 518,
+      "kind": "index"
+    }
+  ],
+  "body_style": [
+    "Times-Roman",
+    10.9,
+    false
+  ],
+  "validation": {
+    "status": "pass",
+    "coverage": 0.9939,
+    "heading_count": 1883,
+    "order_violations": 0,
+    "hierarchy_violations": 4,
+    "low_coverage_ranges": [
+      [
+        223,
+        223
+      ],
+      [
+        228,
+        228
+      ],
+      [
+        253,
+        254
+      ],
+      [
+        353,
+        354
+      ]
+    ],
+    "revised": true,
+    "issues": [
+      "hierarchy: p162 5.5.2.3.3 ('Nonlinear Static Procedure') has no earlier parent 5.5.2.3",
+      "hierarchy: p162 5.5.2.3.4 ('Nonlinear Dynamic Procedures') has no earlier parent 5.5.2.3",
+      "hierarchy: p177 5.6.3.3.3 ('Nonlinear Static Procedure') has no earlier parent 5.6.3.3",
+      "hierarchy: p177 5.6.3.3.4 ('Nonlinear Dynamic Procedure') has no earlier parent 5.6.3.3",
+      "commentary: p266 C6.13.4.1 has no provision 6.13.4.1",
+      "commentary: p266 C6.13.4.2 has no provision 6.13.4.2",
+      "commentary: p276 C7.3.3.2.1 has no provision 7.3.3.2.1",
+      "commentary: p277 C7.3.3.2.2 has no provision 7.3.3.2.2",
+      "commentary: p277 C7.3.3.2.3 has no provision 7.3.3.2.3",
+      "commentary: p277 C7.3.3.2.4 has no provision 7.3.3.2.4",
+      "commentary: p277 C7.3.3.3.1 has no provision 7.3.3.3.1",
+      "commentary: p278 C7.3.3.3.2 has no provision 7.3.3.3.2",
+      "commentary: p278 C7.3.3.3.3 has no provision 7.3.3.3.3",
+      "commentary: p278 C7.3.3.3.4 has no provision 7.3.3.3.4",
+      "commentary: p280 C7.4.1.3.1 has no provision 7.4.1.3.1",
+      "commentary: p281 C7.4.1.3.2 has no provision 7.4.1.3.2",
+      "commentary: p281 C7.4.1.3.3 has no provision 7.4.1.3.3",
+      "commentary: p281 C7.4.1.3.4 has no provision 7.4.1.3.4",
+      "commentary: p281 C7.4.1.3.5 has no provision 7.4.1.3.5",
+      "commentary: p281 C7.4.1.3.6 has no provision 7.4.1.3.6",
+      "commentary: p281 C7.4.1.3.7 has no provision 7.4.1.3.7",
+      "commentary: p282 C7.4.1.3.8 has no provision 7.4.1.3.8",
+      "commentary: p282 C7.4.1.3.9 has no provision 7.4.1.3.9",
+      "commentary: p282 C7.4.1.3.10 has no provision 7.4.1.3.10",
+      "commentary: p282 C7.4.1.3.11 has no provision 7.4.1.3.11",
+      "commentary: p292 C7.5.1.3.1 has no provision 7.5.1.3.1",
+      "commentary: p292 C7.5.1.3.2 has no provision 7.5.1.3.2",
+      "commentary: p317 C8.5.2.2.1 has no provision 8.5.2.2.1",
+      "commentary: p318 C8.5.2.2.2 has no provision 8.5.2.2.2",
+      "commentary: p318 C8.5.2.2.3 has no provision 8.5.2.2.3",
+      "commentary: p318 C8.5.2.2.4 has no provision 8.5.2.2.4",
+      "commentary: p318 C8.5.2.2.5 has no provision 8.5.2.2.5",
+      "commentary: p319 C8.5.3.2.1 has no provision 8.5.3.2.1",
+      "commentary: p319 C8.5.3.2.2 has no provision 8.5.3.2.2",
+      "commentary: p337 C8.6.2.2.1 has no provision 8.6.2.2.1",
+      "commentary: p338 C8.6.2.2.2 has no provision 8.6.2.2.2",
+      "commentary: p338 C8.6.2.2.3 has no provision 8.6.2.2.3",
+      "commentary: p359 C9.2.2.3.3 has no provision 9.2.2.3.3",
+      "commentary: p393 C10.3.1 has no provision 10.3.1",
+      "commentary: p393 C10.3.1.1 has no provision 10.3.1.1"
+    ]
+  }
+}

@@ -6,7 +6,10 @@ other non-ASCII characters with Unicode names, and superscript digits after
 letters split into footnote markers and unexplained superscripts.
 Warning rules live in app/ingest/text_checks.py.
 
-Usage: python scripts/font_check.py [extra.pdf ...]
+The font check runs before a document has a profile, so footnote lines use a
+generic "N." format unless --profile points at a saved profile JSON.
+
+Usage: python scripts/font_check.py [--profile profile.json] [extra.pdf ...]
 """
 from __future__ import annotations
 
@@ -21,10 +24,12 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from app.ingest import text_checks as tc  # noqa: E402
+from app.profile.schema import FootnoteFormat, Profile  # noqa: E402
 
 DEFAULT_TARGETS = [ROOT / "fixtures", ROOT / "data" / "fema356.pdf"]
 MAX_SAMPLES = 12
 WARNING_CLASSES = ("private_use", "control", "replacement")
+GENERIC_FOOTNOTE = FootnoteFormat(line_regex=r"^(?P<marker>\d{1,2})\.(\s|$)", marker_superscript=True)
 
 
 @dataclass
@@ -96,11 +101,11 @@ def record_chars(span: dict, page_no: int, report: FileReport) -> None:
         report.warning_pages.add(page_no)
 
 
-def scan_page(page: pymupdf.Page, report: FileReport) -> None:
+def scan_page(page: pymupdf.Page, report: FileReport, footnote: FootnoteFormat = GENERIC_FOOTNOTE) -> None:
     collect_fonts(page, report)
     page_no = page.number + 1
     lines = page_lines(page)
-    footnotes = tc.footnote_markers(lines)
+    footnotes = tc.footnote_markers(lines, footnote)
     had_text = False
     for line in lines:
         spans = line["spans"]
@@ -111,19 +116,19 @@ def scan_page(page: pymupdf.Page, report: FileReport) -> None:
             marker = tc.superscript_marker(spans[i - 1], span) if i > 0 else None
             if marker:
                 context = tc.span_text(spans[i - 1])[-20:] + "^" + marker
-                explained = tc.is_footnote_reference(marker, span, footnotes)
+                explained = tc.is_footnote_reference(marker, footnotes)
                 target = report.footnote_markers if explained else report.unexplained
                 target.append(Superscript(page_no, marker, context))
     if not had_text:
         report.pages_without_text.append(page_no)
 
 
-def scan_pdf(path: Path) -> FileReport:
+def scan_pdf(path: Path, footnote: FootnoteFormat = GENERIC_FOOTNOTE) -> FileReport:
     report = FileReport(path)
     with pymupdf.open(path) as doc:
         report.page_count = doc.page_count
         for page in doc:
-            scan_page(page, report)
+            scan_page(page, report, footnote)
     return report
 
 
@@ -190,7 +195,8 @@ def print_summary(reports: list[FileReport]) -> None:
             f"{r.occurrences('control'):>5} {r.occurrences('replacement'):>6} "
             f"{len(r.footnote_markers):>8} {len(r.unexplained):>10} {len(r.pages_without_text):>7}"
         )
-    print("  (PUA/ctrl/U+FFFD = character occurrences; footnote = superscripts matched to a footnote on the page)")
+    print("  (PUA/ctrl/U+FFFD = character occurrences; footnote = superscripts matched to a footnote on the page;\n"
+          "   the font check has no table scope, so markers on continued table pages may show as unexplained)")
 
 
 def find_pdfs(targets: list[Path]) -> list[Path]:
@@ -205,11 +211,17 @@ def find_pdfs(targets: list[Path]) -> list[Path]:
 
 def main(argv: list[str]) -> int:
     sys.stdout.reconfigure(encoding="utf-8")
+    footnote = GENERIC_FOOTNOTE
+    if "--profile" in argv:
+        i = argv.index("--profile")
+        profile = Profile.model_validate_json(Path(argv[i + 1]).read_text(encoding="utf-8"))
+        footnote = profile.footnote
+        argv = argv[:i] + argv[i + 2:]
     pdfs = find_pdfs(DEFAULT_TARGETS + [Path(a) for a in argv])
     if not pdfs:
         print("No PDFs found in fixtures/ or data/fema356.pdf.")
         return 1
-    reports = [scan_pdf(p) for p in pdfs]
+    reports = [scan_pdf(p, footnote) for p in pdfs]
     for r in reports:
         print_report(r)
     print_summary(reports)

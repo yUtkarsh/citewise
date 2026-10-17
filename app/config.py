@@ -20,6 +20,7 @@ class Settings:
     model_clauses: str
     model_agent: str
     model_review: str
+    model_profile: str
 
 
 @lru_cache
@@ -32,4 +33,13 @@ def get_settings() -> Settings:
         model_clauses=os.getenv("MODEL_CLAUSES", ""),
         model_agent=os.getenv("MODEL_AGENT", ""),
         model_review=os.getenv("MODEL_REVIEW", ""),
+        model_profile=os.getenv("MODEL_PROFILE", ""),
     )
+
+
+def require_model(name: str) -> str:
+    """The model id for a settings field such as 'model_profile', or a clear error."""
+    model = getattr(get_settings(), name)
+    if not model:
+        raise RuntimeError(f"{name.upper()} is not set in .env (see .env.example)")
+    return model

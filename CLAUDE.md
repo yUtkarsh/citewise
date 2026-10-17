@@ -51,7 +51,8 @@ inside the `.venv` for Python packages, and ask before every system-level instal
 
 - Start FalkorDB: `docker compose up -d` (browser UI on http://localhost:3000)
 - Run app: `uvicorn app.api.main:app --reload`
-- Tests: `pytest -q`
+- Ingest (profile + Pass 1): `python -m app.ingest.run data/fema356.pdf --pass1` (`--fresh`, `--reprofile`, `--no-docling`)
+- Tests: `pytest -q` (Docling test: set `RUN_SLOW=1`)
 
 ## Environment (`.env`, never committed)
 
@@ -62,6 +63,7 @@ MODEL_TABLES=claude-sonnet-5-5
 MODEL_CLAUSES=claude-haiku-5-5
 MODEL_AGENT=claude-sonnet-5-5
 MODEL_REVIEW=claude-sonnet-5-5
+MODEL_PROFILE=claude-sonnet-5-5
 FALKORDB_HOST=localhost
 FALKORDB_PORT=6379
 ```
