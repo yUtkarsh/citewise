@@ -31,6 +31,7 @@ async function load(select) {
   try { data = await getJSON(`/review/${encodeURIComponent(graph)}`); }
   catch (err) { $("#queue").innerHTML = `<p class="src-error">${esc(err.message)}</p>`; return; }
   state.items = data.items;
+  document.title = `Review · ${(data.designation || data.title).slice(0, 40)} · CiteWise`;
   $("#doc-line").innerHTML = `${esc(data.designation || data.title)} · <span class="graph-id">${esc(graph)}</span>`;
   $("#head-links").innerHTML = `<a class="btn" href="report.html?graph=${encodeURIComponent(graph)}">Report</a>`
     + `<a class="btn primary" href="chat.html?graph=${encodeURIComponent(graph)}">Open chat</a>`;

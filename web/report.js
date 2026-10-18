@@ -11,7 +11,7 @@ async function load() {
   let r;
   try { r = await getJSON(`/codes/${encodeURIComponent(graph)}/report`); }
   catch (err) { root.innerHTML = `<a class="back" href="/">← Library</a><p class="src-error">${esc(err.message)}</p>`; return; }
-  document.title = `Report · ${r.card.designation || r.card.title}`.slice(0, 60);
+  document.title = `Report · ${(r.card.designation || r.card.title).slice(0, 40)} · CiteWise`;
   root.innerHTML = [head(r), summary(r), nodes(r), flags(r), warnings(r), runs(r)].join("");
 }
 

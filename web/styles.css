@@ -1,4 +1,4 @@
-/* Code Graph Agent: one static page. Colors are tokens; dark theme redefines them. */
+/* CiteWise: one static page. Colors are tokens; dark theme redefines them. */
 :root {
   color-scheme: light;
   --bg: #f6f4ef;
@@ -634,3 +634,7 @@ a.card-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2p
 .chat-del:hover { color: var(--bad); background: var(--bad-soft); }
 .back-code { font-size: 13px; color: var(--ink-2); text-decoration: none; white-space: nowrap; padding: 3px 8px; border-radius: 6px; border: 1px solid var(--line); }
 .back-code:hover { color: var(--ink); border-color: var(--line-strong); }
+
+/* ==== library heading ==== */
+.page-head h1.app-title { font-size: 30px; letter-spacing: -.02em; margin-bottom: 6px; }
+.tagline { margin: 0; font-size: 15.5px; color: var(--ink-2); max-width: 60ch; }

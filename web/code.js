@@ -19,7 +19,7 @@ async function loadHead() {
   let c;
   try { c = await getJSON(`/codes/${enc}`); }
   catch (err) { $("#code-head").innerHTML = `<p class="src-error">${esc(err.message)}</p>`; return; }
-  document.title = `${c.designation || c.title}`.slice(0, 40);
+  document.title = `${(c.designation || c.title).slice(0, 40)} · CiteWise`;
   const n = c.counts;
   const status = c.job ? { state: "running", text: STAGE_TEXT[c.job.stage] || c.job.stage } : c.status;
   $("#code-head").innerHTML = `

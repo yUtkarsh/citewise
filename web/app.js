@@ -1,4 +1,4 @@
-// Code Graph Agent page. Event contract: web/EVENTS.md.
+// CiteWise chat page. Event contract: web/EVENTS.md.
 "use strict";
 
 const $ = (sel) => document.querySelector(sel);
