@@ -434,39 +434,145 @@ function costLine(cost) {
 
 // ---- facts panel -------------------------------------------------------------------------------
 
-const SOURCE_TEXT = { user: "from you", matched_row: "matched row", assumed: "assumed", agent_selected: "selected by agent",
-  from_clause: "stated in clause" };
+const SOURCE_TEXT = { user: "you", assumed: "assumed", matched_row: "row", from_clause: "clause",
+  agent_selected: "agent" };
+const SOURCE_TITLE = { user: "from you", assumed: "an assumed typical value you accepted", matched_row: "matched table row",
+  from_clause: "stated in a clause", agent_selected: "selected by the agent" };
+const FACT_GROUPS = [
+  ["you", "From you"], ["code", "From the code"], ["agent", "Selected by agent"], ["intermediate", "Intermediate values"],
+];
+const paramInfo = new Map();  // `${graph}|${id}` -> {inGraph, latex, symbol} from the code graph
+
+// Facts from a restored session carry no LaTeX: ask the code graph whether each id is a
+// parameter and what its LaTeX and symbol are (cached per graph).
+async function lookupParams(facts) {
+  const todo = facts.filter((f) => !f.latex && !paramInfo.has(`${state.graph}|${f.param_id}`));
+  if (!todo.length || !state.graph) return false;
+  await Promise.all(todo.map(async (f) => {
+    const key = `${state.graph}|${f.param_id}`;
+    try {
+      const res = await fetch(`/node/Parameter/${encodeURIComponent(f.param_id)}?graph=${encodeURIComponent(state.graph)}`);
+      if (!res.ok) { paramInfo.set(key, { inGraph: false }); return; }
+      const d = await res.json();
+      paramInfo.set(key, { inGraph: true, latex: d.latex || null, symbol: (d.props && d.props.symbol) || d.title || null });
+    } catch { paramInfo.set(key, { inGraph: false }); }
+  }));
+  return true;
+}
+
+function factInfo(f) {
+  const info = paramInfo.get(`${state.graph}|${f.param_id}`) || {};
+  return { latex: f.latex || info.latex || null, inGraph: Boolean(f.latex) || info.inGraph, symbol: info.symbol || f.symbol };
+}
+
+function factGroup(f, info) {
+  if (f.source === "user" || f.source === "assumed") return "you";
+  if (f.source === "matched_row" || f.source === "from_clause") return "code";
+  // a unitless agent value whose id is no parameter of the code: a helper saved for one step (e.g. interpolation bounds)
+  if (info.inGraph === false && !f.unit) return "intermediate";
+  return "agent";
+}
+
+function factName(f, info) {
+  if (info.latex) return `<span class="fact-tex">${tex(info.latex)}</span>`;
+  const sym = info.symbol && info.symbol !== f.param_id ? info.symbol : f.param_id;
+  return `<span class="fact-plain">${esc(String(sym).replace(/_/g, " "))}</span>`;
+}
+
+function sigDigits(v) {
+  const s = Math.abs(v).toString();
+  if (s.includes("e")) return 99;
+  return s.replace(".", "").replace(/^0+/, "").length;
+}
+
+// At most 4 significant digits (1.14982 -> 1.150, 0.599747 -> 0.5997); exact values stay as they are.
+function fmtFact(v) {
+  if (typeof v !== "number" || !Number.isFinite(v)) return String(v ?? "");
+  if (Number.isInteger(v) && Math.abs(v) < 1e4) return String(v);
+  if (sigDigits(v) <= 4) return String(v);
+  const s = v.toPrecision(4);
+  return s.includes("e") ? Number(s).toLocaleString("en-US") : s;
+}
 
 function setFacts(facts) {
   state.facts = facts.map((f) => ({ ...f }));
   for (const f of state.facts) if (!(f.param_id in state.baseFacts)) state.baseFacts[f.param_id] = f.value;
   renderFacts();
+  lookupParams(state.facts).then((fetched) => { if (fetched) renderFacts(); });
+}
+
+function factRow(f, info) {
+  const row = el("div", "fact");
+  if (state.baseFacts[f.param_id] !== undefined && String(state.baseFacts[f.param_id]) !== String(f.value)) row.classList.add("changed");
+  const full = `${f.value ?? ""}${f.unit ? " " + f.unit : ""}`;
+  row.title = `${f.param_id} = ${full}${f.note ? ` · ${f.note}` : ""}`;
+  row.append(el("span", "fact-name", factName(f, info)));
+  const val = el("span", "fact-val");
+  const input = el("input");
+  const shown = fmtFact(f.value);
+  const fit = (text) => { input.style.width = `${Math.max(3, String(text).length) + 1.5}ch`; };
+  input.value = shown;
+  fit(shown);
+  input.title = full;
+  input.disabled = state.busy;
+  input.setAttribute("aria-label", `Value of ${f.symbol || f.param_id}`);
+  input.addEventListener("focus", () => { input.value = f.value ?? ""; fit(input.value); input.select(); });
+  input.addEventListener("blur", () => { if (String(input.value).trim() === String(f.value ?? "")) { input.value = shown; fit(shown); } });
+  input.addEventListener("input", () => fit(input.value));
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") input.blur();
+    if (e.key === "Escape") { input.value = f.value ?? ""; input.blur(); }
+  });
+  input.addEventListener("change", () => editFact(f.param_id, input.value));
+  val.append(input);
+  if (f.unit) val.append(el("span", "unit", esc(f.unit)));
+  row.append(val);
+  const tag = el(f.node ? "button" : "span", `tag ${f.source}`, esc(SOURCE_TEXT[f.source] || f.source));
+  tag.title = SOURCE_TITLE[f.source] || f.source;
+  if (f.node) {
+    tag.type = "button";
+    tag.addEventListener("click", () => { focusNode(f.node.label, f.node.id); openSource(f.node.label, f.node.id); });
+  }
+  row.append(tag);
+  return row;
 }
 
 function renderFacts() {
   const list = $("#facts-list");
   list.innerHTML = "";
-  $("#facts-hint").textContent = state.facts.length
+  const n = state.facts.length;
+  $("#facts-count").textContent = n ? `(${n})` : "";
+  $("#facts-hint").textContent = n
     ? "Edit a value and press Enter to re-run the last question."
     : "Facts from your question appear here. Edit a value to re-run.";
+  const groups = Object.fromEntries(FACT_GROUPS.map(([id]) => [id, []]));
   for (const f of state.facts) {
-    const row = el("div", "fact");
-    if (state.baseFacts[f.param_id] !== undefined && String(state.baseFacts[f.param_id]) !== String(f.value)) row.classList.add("changed");
-    row.title = f.note || f.param_id;
-    row.append(el("span", "sym", tex(f.latex || f.symbol || f.param_id)), el("span", "eq", "="));
-    const input = el("input");
-    input.value = f.value ?? "";
-    input.disabled = state.busy;
-    input.setAttribute("aria-label", `Value of ${f.symbol || f.param_id}`);
-    input.addEventListener("keydown", (e) => { if (e.key === "Enter") input.blur(); if (e.key === "Escape") { input.value = f.value ?? ""; input.blur(); } });
-    input.addEventListener("change", () => editFact(f.param_id, input.value));
-    row.append(input);
-    if (f.unit) row.append(el("span", "unit", esc(f.unit)));
-    const tag = el(f.node ? "button" : "span", `tag ${f.source}`, esc(SOURCE_TEXT[f.source] || f.source));
-    if (f.node) { tag.type = "button"; tag.addEventListener("click", () => { focusNode(f.node.label, f.node.id); openSource(f.node.label, f.node.id); }); }
-    row.append(tag);
-    list.append(row);
+    const info = factInfo(f);
+    groups[factGroup(f, info)].push([f, info]);
   }
+  for (const [id, name] of FACT_GROUPS) {
+    const items = groups[id];
+    if (!items.length) continue;
+    const box = el(id === "intermediate" ? "details" : "div", `fact-group g-${id}`);
+    const head = el(id === "intermediate" ? "summary" : "div", "fact-group-h", `${name} <span>${items.length}</span>`);
+    box.append(head);
+    for (const [f, info] of items) box.append(factRow(f, info));
+    list.append(box);
+  }
+}
+
+function initFactsToggle() {
+  const panel = $("#facts"), btn = $("#facts-toggle");
+  const apply = (collapsed) => {
+    panel.classList.toggle("collapsed", collapsed);
+    btn.setAttribute("aria-expanded", String(!collapsed));
+  };
+  apply(storage(() => localStorage.getItem("facts_collapsed") === "1", false));
+  btn.addEventListener("click", () => {
+    const collapsed = !panel.classList.contains("collapsed");
+    apply(collapsed);
+    storage(() => localStorage.setItem("facts_collapsed", collapsed ? "1" : "0"));
+  });
 }
 
 function editFact(paramId, raw) {
@@ -640,6 +746,7 @@ function init() {
   }
   initTheme();
   initGraph();
+  initFactsToggle();
   initExample();
   if (state.graph) $("#graph-name").textContent = state.graph;
   $("#composer").addEventListener("submit", (e) => {
