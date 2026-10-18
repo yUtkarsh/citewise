@@ -406,7 +406,7 @@ function handleEvent(msg, event, data) {
       msg.answer.classList.remove("streaming");
       msg.answer.innerHTML = renderMarkdown(msg.text, false);
       for (const w of data.warnings || []) msg.answer.append(el("div", "warning", `Check: ${esc(w)}`));
-      msg.meta.textContent = costLine(data.cost);
+      msg.meta.innerHTML = costLine(data.cost);
       break;
     }
     case "facts":
@@ -428,8 +428,8 @@ function costLine(cost) {
   if (cost.tool_calls != null) parts.push(`${cost.tool_calls} tool calls`);
   if (cost.input_tokens) parts.push(`${(cost.input_tokens / 1000).toFixed(1)}k in / ${(cost.output_tokens / 1000).toFixed(1)}k out`);
   if (cost.usd) parts.push(`$${cost.usd.toFixed(4)}`);
-  if (cost.model) parts.push(cost.model);
-  return parts.join(" · ");
+  if (cost.model) parts.push(`<span class="ai-model" title="${esc(cost.model)}">AI model</span>`);  // the id on hover
+  return parts.map((p) => (p.startsWith("<span") ? p : esc(p))).join(" · ");
 }
 
 // ---- facts panel -------------------------------------------------------------------------------
@@ -620,7 +620,10 @@ function sourceHtml(d) {
   if (d.status) pills.push(`<span class="pill st-${esc(d.status)}">${esc(d.status)}</span>`);
   if (d.review_status) pills.push(`<span class="pill st-${esc(d.review_status)}">${esc(d.review_status)}</span>`);
   if (d.confidence != null) pills.push(`<span class="pill">conf ${esc(d.confidence)}</span>`);
-  if (d.extraction_method) pills.push(`<span class="pill">${esc(d.extraction_method)}</span>`);
+  if (d.extraction_method) {  // "claude:<model id>" reads as AI-extracted; the method stays on hover
+    const ai = /^claude[:-]/i.test(d.extraction_method);
+    pills.push(`<span class="pill" title="${esc(d.extraction_method)}">${ai ? "AI-extracted" : esc(d.extraction_method)}</span>`);
+  }
   if (d.pdf_url) pills.push(`<a class="pdf-link" href="${esc(d.pdf_url)}" target="_blank" rel="noopener">Open PDF at page ${esc(d.page)} ↗</a>`);
   out.push(`<div class="pills">${pills.join("")}</div>`);
 

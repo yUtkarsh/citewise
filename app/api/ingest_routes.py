@@ -295,7 +295,7 @@ def _profile_stage(job: Job) -> None:
         with pymupdf.open(job.pdf) as doc:
             page_map = build_page_map(doc)
             job.log(f"page map: {doc.page_count} pages")
-            job.set_stage("profiling", "Building the document profile (Claude reads the page map and sample pages)")
+            job.set_stage("profiling", "Building the document profile (the AI reads the page map and sample pages)")
             args = _Args(reprofile=False, profile=None)
             profile = get_profile(doc, job.pdf_hash, args, page_map, job.log)
             report = validate(doc, profile)
@@ -449,7 +449,7 @@ def _run_pass2(job: Job, doc, profile, graph, report_dir: Path) -> None:
     from app.config import get_settings
 
     max_cost = upload_max_cost()
-    job.set_stage("pass2", f"Pass 2: Claude reads notation, definitions, clauses and tables (cost cap ${max_cost:.2f})")
+    job.set_stage("pass2", f"Pass 2: the AI reads notation, definitions, clauses and tables (cost cap ${max_cost:.2f})")
     skel = from_graph(graph, job.graph)
     state_path = JOBS_DIR / f"{job.pdf_hash[:12]}_pass2.jsonl"
     meter = _CostMeter(state_path)

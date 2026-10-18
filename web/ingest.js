@@ -72,7 +72,7 @@ function showProfile(p) {
   const runs = p.no_heading_runs || [];
   $("#validation").innerHTML = `
     <div class="val-head"><span class="status st-${v.status === "pass" ? "ready" : "partial"}">${esc(v.status || "not validated")}</span>
-      ${v.revised ? `<span class="pill">revised once by Claude</span>` : ""}</div>
+      ${v.revised ? `<span class="pill">revised once by the AI</span>` : ""}</div>
     <dl class="stats compact">
       <div><dt>Coverage</dt><dd class="${v.coverage < 0.9 ? "warnv" : ""}">${fmtPct(v.coverage)}</dd></div>
       <div><dt>Headings</dt><dd>${fmtInt(v.heading_count)}</dd></div>

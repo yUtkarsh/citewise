@@ -253,7 +253,7 @@ function wireActions(d) {
   };
   $("#reject").onclick = async () => {
     const note = $("#note").value.trim();
-    if (!note) { msg.innerHTML = `<span class="src-error">Write a note first: it is sent to Claude with the original inputs.</span>`; $("#note").focus(); return; }
+    if (!note) { msg.innerHTML = `<span class="src-error">Write a note first: it is sent to the AI with the original inputs.</span>`; $("#note").focus(); return; }
     const gridWrong = !!($("#grid-wrong") && $("#grid-wrong").checked);
     busy(true, d.label === "Finding" ? "Dismissing…" : gridWrong ? "Rebuilding the grid from the image, then re-running this job with your note…"
       : "Re-running this job with your note on the review model…");
@@ -325,6 +325,11 @@ function gridCompareHtml(g) {
     </div>`;
 }
 
+// The model id stays out of the text; it is on hover.
+function aiModel(id) {
+  return id ? `<span class="ai-model" title="${esc(id)}">AI model</span>` : "AI model";
+}
+
 function compareHtml(r) {
   if (r.grid && !r.grid.ok) return gridCompareHtml(r.grid);
   const before = r.before.extracted;
@@ -349,7 +354,7 @@ function compareHtml(r) {
       <div class="cmp-col ${r.replaced ? "kept" : "dropped"}"><div class="ba-h">${afterTitle}</div>${after ? clauseItemsHtml(after, before, "after") : `<span class="hint">no answer</span>`}${afterJson}</div>
     </div>`;
   }
-  return `${r.grid ? gridCompareHtml(r.grid) : ""}<div class="section-label">Before and after · ${esc(r.model)} · ${cost}</div>
+  return `${r.grid ? gridCompareHtml(r.grid) : ""}<div class="section-label">Before and after · ${aiModel(r.model)} · ${cost}</div>
     ${res}${body}
     <details class="issues"><summary>Run log</summary><pre class="log">${esc(r.log.join("\n"))}</pre></details>`;
 }
