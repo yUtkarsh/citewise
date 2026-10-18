@@ -3,7 +3,7 @@ rem One-time setup: Python venv, packages, .env, FalkorDB image.
 setlocal
 cd /d "%~dp0"
 
-echo == Code Graph Agent: install ==
+echo == CiteWise: install ==
 
 rem --- Python 3.11+: first candidate that is new enough ---
 set "PY="

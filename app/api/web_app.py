@@ -7,7 +7,7 @@ from app.api.ingest_routes import router as ingest_router
 from app.api.review_routes import router as review_router
 from app.api.session_routes import router as session_router
 
-app = FastAPI(title="Code Graph Agent")
+app = FastAPI(title="CiteWise")
 app.include_router(chat_router)
 app.include_router(ingest_router)
 app.include_router(session_router)

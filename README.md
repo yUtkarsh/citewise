@@ -1,4 +1,6 @@
-# Code Graph Agent
+# CiteWise
+
+**Ask any code a question. Every answer cited, every number checked.**
 
 Turn a digital building-code PDF into a FalkorDB graph, then ask design questions and get
 answers that walk the graph clause by clause, with every number computed by code and every
@@ -247,7 +249,7 @@ then the app on http://127.0.0.1:8000/ and opens it; `APP_PORT` and `NO_BROWSER=
 that). Set `ANTHROPIC_API_KEY` in `.env` between the two.
 
 ```powershell
-git clone <this repo>; cd code-graph-agent
+git clone https://github.com/yUtkarsh/citewise.git; cd citewise
 docker compose up -d                      # FalkorDB on :6379, its browser UI on http://localhost:3000
 python -m venv .venv; .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
