@@ -657,6 +657,11 @@ def band_numbers(table: TableRec, row: RowRec) -> list[float]:
 def number_issue(value, row: RowRec, table: TableRec) -> Issue | None:
     if value.number is None:
         return None
+    if row.grid_method == "image":  # a grid read from the image: confirm against the text layer's numbers
+        if not any(abs(n - value.number) <= 1e-9 * max(1.0, abs(n)) for n in table.text_numbers):
+            return Issue("table_number_mismatch", f"row {row.index}, col {value.col}: {value.number:g} is not "
+                                                  f"printed in the table's text layer")
+        return None
     if row.grid_method in GRID_METHODS:
         cell = row.cells[value.col]
         if not any(abs(n - value.number) < 1e-9 for n in numbers(cell)):
@@ -860,7 +865,8 @@ def check_table(result: TableExtraction, table: TableRec, rows: list[RowRec],
             if row is None or row.is_header or out.row in number_rows:
                 continue  # a row with a wrong number is already retried for it
             markers = {m for m, _ in table.footnotes} | set(row.markers)
-            if gaps := grid_numbers_missing(out, row, headers, (bands or {}).get(out.row), markers):
+            band = None if row.grid_method == "image" else (bands or {}).get(out.row)  # no row boxes in an image grid
+            if gaps := grid_numbers_missing(out, row, headers, band, markers):
                 issues.append(Issue("value_missing", f"row {out.row}: numbers in the grid are missing from the answer "
                                                      f"({'; '.join(gaps[:6])}); report every value in the row"))
     missing = [r.index for r in rows if r.index not in seen and is_body_row(r, table.caption, headers)]

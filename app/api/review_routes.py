@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 import json
+import re
 from pathlib import Path
 import time
 
@@ -249,6 +250,16 @@ def review_item(name: str, label: str, nid: str) -> dict:
 
 class Decision(BaseModel):
     note: str | None = None
+    grid_wrong: bool = False  # the table's grid is wrong: rebuild it from the image before re-extracting
+
+
+GRID_NOTE = re.compile(r"\bgrid\b[^.]{0,40}\b(wrong|incorrect|broken|bad|misaligned|shifted)\b"
+                       r"|\b(wrong|incorrect|broken|bad|misaligned|shifted)\b[^.]{0,40}\bgrid\b"
+                       r"|\bcolumns?\b[^.]{0,30}\b(wrong|shifted|misaligned|merged|split)\b", re.I)
+
+
+def grid_is_wrong(note: str, flag: bool) -> bool:
+    return flag or bool(GRID_NOTE.search(note or ""))
 
 
 def _pin_ids(pins, job: str) -> list[str]:
@@ -378,6 +389,13 @@ async def rerun_with_note(graph, name: str, label: str, nid: str, note: str, pat
     say(f"re-running {', '.join(j.id for j in jobs)} on {model} with the reviewer note")
     outcomes = await runner.run(jobs)
     sink = GraphSink(graph)
+    second = []
+    if label == "Table":  # image-trust: an independent second read of numbers the text layer cannot confirm
+        from app.ingest.pass2 import validate as v
+        from app.ingest.pass2.jobs import second_read_job
+        second = [second_read_job(o.job, cells) for o in outcomes
+                  if o.output is not None and o.job.table.trust == "image" and passes(o.job, o)
+                  and (cells := v.image_cells(o.output, o.job.table, o.job.rows))]
     results = []
     for outcome in outcomes:
         job, stored = outcome.job, before.get(outcome.job.id)
@@ -394,6 +412,12 @@ async def rerun_with_note(graph, name: str, label: str, nid: str, note: str, pat
                         "issues": [i.as_dict() for i in outcome.issues][:20],
                         "answer": _summary(outcome.output, job),
                         "stored_status": stored.get("status") if stored else None})
+    for job in second:
+        say(f"second read of {len(job.cells)} image-sourced value(s) in {job.table.id}")
+    for read in (await runner.run(second)) if second else []:
+        sink.result(read, notation.ids())
+        say(f"{read.job.id}: {read.status}" + (f" ({', '.join(sorted({i.code for i in read.issues}))})"
+                                               if read.issues else ""))
     if len(outcomes) < len(jobs):
         say("not every job ran (cost cap or a failed request)")
     after_view = _answer_table_view([o.output for o in outcomes if o.output is not None]) if label == "Table" else None
@@ -401,10 +425,53 @@ async def rerun_with_note(graph, name: str, label: str, nid: str, note: str, pat
             "after_view": after_view, "cost": runner.costs.summary(), "model": model, "log": lines}
 
 
-async def reject(graph, name: str, label: str, nid: str, note: str, paths: Paths, transport=None) -> dict:
+async def revise_grid(graph, name: str, nid: str, note: str, paths: Paths, transport=None) -> dict:
+    """Rebuild a table's grid from its image (one MODEL_REVIEW call, checked against the
+    text layer, retried once); store it only if it passes."""
+    from app.config import get_settings, require_model
+    from app.ingest.pass2.grid_revision import (GRID_SCHEMA_VERSION, check_grid, grid_job, grid_view, store_grid,
+                                                text_layer_numbers)
+    from app.ingest.pass2.records import from_graph
+    from app.ingest.pass2.runner import content_blocks
+    from app.llm import CACHE_DIR, CallSpec, anthropic_async_transport, call_validated
+    from app.prompts import load
+
+    pdf_hash = _document_hash(graph)
+    doc = pymupdf.open(_pdf_for(name, pdf_hash))
+    table = next((t for t in from_graph(graph, name).tables if t.id == nid), None)
+    if table is None:
+        raise HTTPException(404, f"table {nid} is not in the skeleton")
+    required = text_layer_numbers(doc, table)
+    job = grid_job(table, note)
+    model = require_model("model_review")
+    prompt = load(job.prompt)
+    spec = CallSpec(model=model, system=prompt.text, content=lambda: content_blocks(job, doc), output=job.output,
+                    max_tokens=job.max_tokens, effort="medium",
+                    fallbacks=get_settings().server_fallback and "haiku" not in model)
+    call = await call_validated(spec, prompt, job.cache_text(), GRID_SCHEMA_VERSION,
+                                lambda out: check_grid(out, required), transport or anthropic_async_transport,
+                                paths.cache_dir or CACHE_DIR, use_cache=False)
+    usage = call.usages
+    ok = call.output is not None and not any(i.retry for i in call.issues)
+    result = {"ok": ok, "issues": [i.as_dict() for i in call.issues], "required_numbers": required,
+              "before": grid_view(table.rows), "after": None, "usages": usage, "attempts": call.attempts}
+    if ok:
+        rows = store_grid(graph, table, call.output, required)
+        result["after"] = grid_view(rows)
+    return result
+
+
+async def reject(graph, name: str, label: str, nid: str, note: str, paths: Paths, transport=None,
+                 grid_wrong: bool = False, grid_transport=None) -> dict:
     if not note or not note.strip():
         raise HTTPException(422, "a rejection needs a note saying what is wrong")
     before = item_detail(graph, name, label, nid)
+    grid = None
+    if label == "Table" and grid_is_wrong(note, grid_wrong):
+        grid = await revise_grid(graph, name, nid, note.strip(), paths, grid_transport or transport)
+        if not grid["ok"]:  # the grid stays as it was; the table is not re-extracted on a bad grid
+            return {"before": before, "after": before, "review_status": before.get("review_status"), "grid": grid,
+                    "results": [], "replaced": False, "after_view": None, "log": ["the rebuilt grid failed its check"]}
     run = await rerun_with_note(graph, name, label, nid, note.strip(), paths, transport)
     rejections = (before.get("rejections") or 0) + 1
     status = "unreviewed" if run["replaced"] else ("needs_manual" if rejections >= MAX_REJECTIONS else "rejected")
@@ -413,10 +480,10 @@ async def reject(graph, name: str, label: str, nid: str, note: str, paths: Paths
                 {"id": nid, "s": status, "r": rejections, "note": note.strip(), "t": time.time(),
                  "sev": _severity(before["flags"]) if before["flags"] else None})
     after = item_detail(graph, name, label, nid)
-    return {"before": before, "after": after, "review_status": status, **run}
+    return {"before": before, "after": after, "review_status": status, "grid": grid, **run}
 
 
 @router.post("/review/{name}/item/{label}/{nid:path}/reject")
 async def reject_route(name: str, label: str, nid: str, body: Decision) -> dict:
     graph = _code_graph(name)
-    return await reject(graph, name, label, nid, body.note or "", Paths())
+    return await reject(graph, name, label, nid, body.note or "", Paths(), grid_wrong=body.grid_wrong)

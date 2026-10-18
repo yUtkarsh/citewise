@@ -97,6 +97,7 @@ function itemHtml(d) {
     <div class="actions" id="actions">
       <div class="section-label">Decision</div>
       <textarea id="note" rows="2" placeholder="Note: what is wrong (required to reject, optional to approve)"></textarea>
+      ${d.label === "Table" ? `<label class="hint"><input type="checkbox" id="grid-wrong"> The grid is wrong: rebuild it from the image first</label>` : ""}
       <div class="card-actions">
         <button type="button" class="btn primary" id="approve">Approve</button>
         <button type="button" class="btn" id="reject">Reject and re-run with the note</button>
@@ -236,12 +237,15 @@ function wireActions(d) {
   $("#reject").onclick = async () => {
     const note = $("#note").value.trim();
     if (!note) { msg.innerHTML = `<span class="src-error">Write a note first: it is sent to Claude with the original inputs.</span>`; $("#note").focus(); return; }
-    busy(true, "Re-running this job with your note on the review model…");
+    const gridWrong = !!($("#grid-wrong") && $("#grid-wrong").checked);
+    busy(true, gridWrong ? "Rebuilding the grid from the image, then re-running this job with your note…"
+      : "Re-running this job with your note on the review model…");
     try {
       const r = await getJSON(`${itemUrl(d)}/reject`, { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ note }) });
-      busy(false, r.replaced ? "The new answer passes its checks and replaced the old one. It is back in the queue for approval."
-        : `The new answer did not pass, so the stored one stays. Status: ${esc(r.review_status.replace("_", " "))}.`);
+        body: JSON.stringify({ note, grid_wrong: gridWrong }) });
+      busy(false, r.grid && !r.grid.ok ? "The rebuilt grid failed its check, so the grid and the answer stay as they were."
+        : r.replaced ? "The new answer passes its checks and replaced the old one. It is back in the queue for approval."
+        : `The new answer did not pass, so the stored one stays. Status: ${esc((r.review_status || "").replace("_", " "))}.`);
       $("#compare").innerHTML = compareHtml(r);
       updateItem(d, r.review_status);
     } catch (err) { busy(false, `<span class="src-error">${esc(err.message)}</span>`); }
@@ -284,7 +288,27 @@ function clauseItemsHtml(x, other, side) {
     + list("Exceptions", "exceptions", (t) => t, esc);
 }
 
+// ---- a grid rebuilt from the image: the Pass 1 grid beside the new one ----
+function gridTableHtml(rows) {
+  if (!rows || !rows.length) return `<span class="hint">no grid</span>`;
+  const width = Math.max(...rows.map((r) => r.cells.length));
+  return `<table class="tview"><tbody>${rows.map((r) => `<tr>${Array.from({ length: width }, (_, i) => {
+    const t = r.cells[i] ?? "";
+    return r.header ? `<th>${esc(t)}</th>` : `<td>${esc(t)}</td>`;
+  }).join("")}</tr>`).join("")}</tbody></table>`;
+}
+
+function gridCompareHtml(g) {
+  const issues = g.issues && g.issues.length ? `<ul class="flags">${g.issues.map((i) => `<li class="sev-${esc(i.severity || "medium")}"><b>${esc(i.reason)}</b>: ${esc(i.detail)}</li>`).join("")}</ul>` : "";
+  return `<div class="section-label">Grid · ${g.ok ? "rebuilt from the image" : "rebuilt grid refused"} · ${g.attempts} call${g.attempts === 1 ? "" : "s"}</div>${issues}
+    <div class="cmp">
+      <div class="cmp-col"><div class="ba-h">Before: Pass 1 grid (text layer)</div>${gridTableHtml(g.before)}</div>
+      <div class="cmp-col ${g.ok ? "kept" : "dropped"}"><div class="ba-h">After: grid from the image</div>${gridTableHtml(g.after)}</div>
+    </div>`;
+}
+
 function compareHtml(r) {
+  if (r.grid && !r.grid.ok) return gridCompareHtml(r.grid);
   const before = r.before.extracted;
   const cost = r.cost && r.cost.total_cost_usd != null ? `$${r.cost.total_cost_usd.toFixed(4)}` : "–";
   const res = r.results.map((x) => `<div class="flags-line"><b>${esc(x.job)}</b>: new answer ${esc(x.status)}${x.kept ? ", kept" : ", not kept"}`
@@ -307,7 +331,7 @@ function compareHtml(r) {
       <div class="cmp-col ${r.replaced ? "kept" : "dropped"}"><div class="ba-h">${afterTitle}</div>${after ? clauseItemsHtml(after, before, "after") : `<span class="hint">no answer</span>`}${afterJson}</div>
     </div>`;
   }
-  return `<div class="section-label">Before and after · ${esc(r.model)} · ${cost}</div>
+  return `${r.grid ? gridCompareHtml(r.grid) : ""}<div class="section-label">Before and after · ${esc(r.model)} · ${cost}</div>
     ${res}${body}
     <details class="issues"><summary>Run log</summary><pre class="log">${esc(r.log.join("\n"))}</pre></details>`;
 }

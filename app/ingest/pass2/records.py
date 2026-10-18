@@ -98,6 +98,7 @@ class TableRec:
     trust: str = "text"  # text: numbers must match the text layer; image: read from the image, read twice
     trust_reason: str = ""
     suspect_spans: list[str] = field(default_factory=list)  # flagged text-layer lines inside the table
+    text_numbers: list[float] = field(default_factory=list)  # image grid: numbers the text layer prints
 
 
 GARBLED = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\ue000-\uf8ff\ufffd\U000f0000-\U0010ffff]")
@@ -292,8 +293,9 @@ def from_graph(graph, doc_id: str) -> Skeleton2:
         graph, "MATCH (f:FlaggedLine) RETURN f.page, f.bbox, f.reasons, f.text")]
     flagged = [f[:3] for f in flagged_text]
     q = ("MATCH (t:Table) OPTIONAL MATCH (c:Clause)-[:CONTAINS]->(t) "
-         "RETURN t.id, t.number, t.caption, t.pages, t.crops, t.header_crop, t.grid_method, c.id, t.status")
-    for tid, num, caption, pages, crops, header_crop, methods, cid, status in _rows(graph, q):
+         "RETURN t.id, t.number, t.caption, t.pages, t.crops, t.header_crop, t.grid_method, c.id, t.status, "
+         "t.text_numbers")
+    for tid, num, caption, pages, crops, header_crop, methods, cid, status, text_numbers in _rows(graph, q):
         rows = [RowRec(index, page, _box(bbox), json.loads(cells), is_header, method or (methods or [""])[0],
                        list(markers or []))
                 for index, page, bbox, cells, is_header, method, markers in _rows(
@@ -303,11 +305,14 @@ def from_graph(graph, doc_id: str) -> Skeleton2:
             graph, "MATCH (:Table {id: $id})-[:HAS_FOOTNOTE]->(f:Footnote) RETURN f.marker, f.text ORDER BY f.id",
             {"id": tid})]
         trust, reason = table_trust(rows, flagged)
+        if any(r.grid_method == "image" for r in rows):  # a grid a reviewer had rebuilt from the image
+            trust, reason = "image", "grid rebuilt from the image"
         tables.append(TableRec(id=tid, number=num, caption=caption or "", pages=list(pages or []),
                                crops=[c for c in (crops or []) if c], header_crop=header_crop, rows=rows,
                                footnotes=notes, clause_id=cid,
                                referenced_by=list(dict.fromkeys(referenced_by.get(tid, []))),
                                status=status or "skeleton", trust=trust, trust_reason=reason,
-                               suspect_spans=table_suspect_spans(rows, flagged_text)))
+                               suspect_spans=table_suspect_spans(rows, flagged_text),
+                               text_numbers=list(text_numbers or [])))
     tables.sort(key=lambda t: (t.pages[0] if t.pages else 0, t.id))
     return Skeleton2(doc_id=doc_id, clauses=sorted(clauses.values(), key=lambda c: c.order), tables=tables)
