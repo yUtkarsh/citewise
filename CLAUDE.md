@@ -54,6 +54,7 @@ inside the `.venv` for Python packages, and ask before every system-level instal
 - Ingest (profile + Pass 1): `python -m app.ingest.run data/fema356.pdf --pass1` (`--fresh`, `--reprofile`, `--no-docling`)
 - Pass 2: `python -m app.ingest.run data/fema356.pdf --pass2` (`--pages 120-140`, `--chapters 2,3`, `--jobs`, `--limit`, `--dry-run`, `--redo`, `--clause-crops`)
 - Pass 2 checkpoint on fixtures: `python -m scripts.pass2_fixtures --clause-crops always` (real API calls; `--dry-run` first)
+- Global pass (after Pass 2): `python -m app.ingest.global_pass --code fema356` (`--parts resolve,commentary,inferred,checks`, `--dry-run`, `--max-cost`)
 - Tests: `pytest -q` (Docling test: set `RUN_SLOW=1`)
 
 ## Environment (`.env`, never committed)
