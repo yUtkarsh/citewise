@@ -6,7 +6,9 @@ and symbols matched against the notation dictionary at write time):
    units, or two notation entries scoped to different chapters, are never paired. Pairs
    are grouped into clusters of at most MAX_CLUSTER, closest first.
 2. A cluster whose members all carry the same meaning word for word (and the same units)
-   is merged without a call.
+   is merged without a call, unless two members' ids or symbols differ only by letter case
+   (M_PCE / M_pCE, c_1 / C_1): case can carry meaning in a code's notation, so such a
+   cluster goes to Claude with its meanings, units and notation scope.
 3. Every other cluster gets one Claude call (``MODEL_GLOBAL``, default ``MODEL_REVIEW``):
    merge, keep separate, or flag. A merge with confidence >= 0.7 is applied (after the same
    guards); a low-confidence or flagged decision goes to the review queue.
@@ -129,10 +131,23 @@ def survivor_of(ids: list[str], params: dict[str, Param]) -> str:
     return min(ids, key=lambda i: (params[i].source != "notation", -params[i].edges, len(i), i))
 
 
+def _case_key(text: str | None) -> str:
+    return re.sub(r"[^A-Za-z0-9]", "", text or "")
+
+
+def differ_only_by_case(a: Param, b: Param) -> bool:
+    """Ids or symbols equal apart from letter case (and punctuation), but not equal."""
+    return any(_case_key(x) != _case_key(y) and _case_key(x).lower() == _case_key(y).lower()
+               for x, y in ((a.id, b.id), (a.symbol, b.symbol)))
+
+
 def is_exact(ids: list[str], params: dict[str, Param]) -> bool:
+    """Merged without a call: one meaning word for word, compatible, and no two members
+    told apart only by letter case."""
     meanings = {_meaning(params[i].description) for i in ids}
+    members = [(params[a], params[b]) for a in ids for b in ids if a < b]
     return len(meanings) == 1 and len(next(iter(meanings))) >= MIN_EXACT and \
-        all(compatible(params[a], params[b]) for a in ids for b in ids if a < b)
+        all(compatible(x, y) and not differ_only_by_case(x, y) for x, y in members)
 
 
 def prompt_text(ids: list[str], params: dict[str, Param]) -> str:

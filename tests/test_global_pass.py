@@ -207,3 +207,16 @@ def test_a_merge_proposal_is_applied_only_when_approved(graph, tmp_path):
 def test_merge_guards_and_symbol_renames():
     assert units_conflict("kips", "in.") and not units_conflict("in-kips", "In-Kips") and not units_conflict(None, "k")
     assert rename_symbols("f_c*A + f_ce", {"f_c": "f_prime_c"}) == "f_prime_c*A + f_ce"
+
+
+def test_the_exact_tier_never_merges_ids_that_differ_only_by_case():
+    from app.ingest.global_pass.resolve import Param, is_exact
+
+    meaning = "Expected plastic moment capacity of the member"
+    params = {i: Param(i, i, [], meaning, None, src, [], 1) for i, src in
+              (("M_PCE", "notation"), ("M_pCE", "clause"), ("Sum_E", "notation"), ("Sigma_E", "notation"))}
+    assert not is_exact(["M_PCE", "M_pCE"], params)  # goes to Claude with meanings, units and scope
+    assert is_exact(["Sigma_E", "Sum_E"], params)
+    params["c_1"] = Param("c_1", "c1", [], meaning, None, "notation", [], 1)
+    params["C_1"] = Param("C_1", "C1", [], meaning, None, "notation", [], 1)
+    assert not is_exact(["C_1", "c_1"], params)
