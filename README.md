@@ -235,8 +235,16 @@ RETURN n.id, a.value, a.unit, a.source, a.label ORDER BY a.updated
 
 ## Setup
 
-Requirements: Python 3.11+, Docker Desktop, an Anthropic API key (Console credits).
+Requirements: Python 3.11+, Docker Desktop, an Anthropic API key (Console credits), and
+FalkorDB 4.22.1 or newer (graph module 42201). `docker-compose.yml` pins
+`falkordb/falkordb:v4.22.1` by digest, the version the graph was built and tested on.
 The commands are for Windows PowerShell; on macOS or Linux use `source .venv/bin/activate`.
+
+On Windows, two scripts do the same in one step each: `install.bat` (finds Python 3.11+,
+creates `.venv`, installs the requirements, copies `.env.example` to `.env`, pulls the
+FalkorDB image) and `launch.bat` (starts Docker Desktop if needed, `docker compose up -d`,
+then the app on http://127.0.0.1:8000/ and opens it; `APP_PORT` and `NO_BROWSER=1` change
+that). Set `ANTHROPIC_API_KEY` in `.env` between the two.
 
 ```powershell
 git clone <this repo>; cd code-graph-agent
@@ -261,10 +269,11 @@ counts after. It refuses to overwrite an existing `code_fema356` unless you pass
 It needs a FalkorDB graph module at the export's version (`falkordb_graph_module` in the
 manifest) or newer: `docker compose pull` updates an older image. The library, review page
 and FalkorDB browser UI (http://localhost:3000) then show the graph; chat at
-`chat.html?graph=code_fema356` also needs `ANTHROPIC_API_KEY`. Equation and clause crop
-images are files under `data/crops/`, not graph data, so they are not in the dump and the
-source panel shows text without them. To re-export after rebuilding:
-`python -m scripts.export_graph --code fema356`.
+`chat.html?graph=code_fema356` also needs `ANTHROPIC_API_KEY`. Equation, table and clause
+crop images are files, not graph data: they ship as `export/code_fema356_crops.zip` (443
+PNGs, 23 MB), which the loader checks against the manifest and unpacks into
+`data/crops/code_fema356/`, keeping files already there. To re-export after rebuilding
+(dump, manifest and crops zip): `python -m scripts.export_graph --code fema356`.
 
 `.env` (never committed; loaded by the app with python-dotenv, not exported to the shell):
 
@@ -395,7 +404,7 @@ app/
   prompts/      one versioned file per Claude prompt
 web/            static pages (Cytoscape.js, KaTeX); web/EVENTS.md is the chat event contract
 scripts/        fixtures, font check, table recheck, orphan cleanup, graph export/load, checkpoint questions
-export/         the FEMA 356 graph as a FalkorDB dump, for scripts.load_graph
+export/         the FEMA 356 graph as a FalkorDB dump plus its crop images, for scripts.load_graph
 tests/          pytest suite with fake models and synthetic graphs
 fixtures/       public FEMA 356 pages
 SPEC.md         the full spec, build order and known issues
