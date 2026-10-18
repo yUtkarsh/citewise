@@ -273,3 +273,28 @@ def test_an_equation_shares_the_review_label_of_its_clause_in_trace(code_graph):
         assert "extracted with clause 1.3" in lab.reason
     finally:
         code_graph.query("MATCH (e:Equation {id: 'Equation 1-2'}) SET e.status = 'flagged'")
+
+
+def test_a_fact_saved_under_a_symbol_goes_to_its_parameter(code_graph):
+    code_graph.query("CREATE (:Parameter {id: 'S_a', symbol: 'Sₐ', description: 'Spectral acceleration'})")
+    try:
+        box = Toolbox(code_graph, MemoryFacts())
+        box.run("save_session_facts", {"facts": [{"id": "Sa", "value": 0.6, "unit": "g", "source": "user"},
+                                                 {"id": "Wt", "value": 800, "unit": "kips", "source": "user"},
+                                                 {"id": "year_built", "value": 1980, "source": "user"}]})
+        facts = box.store.all()
+        assert facts["S_a"].kind == "parameter" and facts["S_a"].label == "Sa"  # symbol match
+        assert facts["W"].number() == 800  # alias match
+        assert facts["year_built"].kind == "descriptor" and "Sa" not in facts
+    finally:
+        code_graph.query("MATCH (p:Parameter {id: 'S_a'}) DELETE p")
+
+
+def test_symbol_matching_prefers_the_same_case(code_graph):
+    code_graph.query("CREATE (:Parameter {id: 'w', symbol: 'w', description: 'Unit weight'})")
+    try:
+        box = Toolbox(code_graph, MemoryFacts())
+        assert box.parameter_id("W") == ("W", True) and box.parameter_id("w") == ("w", True)
+        assert box.parameter_id("Wt") == ("W", True)
+    finally:
+        code_graph.query("MATCH (p:Parameter {id: 'w'}) DELETE p")

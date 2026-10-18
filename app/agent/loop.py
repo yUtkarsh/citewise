@@ -67,6 +67,7 @@ class ToolCall:
     name: str
     args: dict
     result: ToolResult
+    id: str = ""  # the tool-use id
 
     def line(self) -> str:
         return f"{self.name}({args_text(self.args)}) -> {self.result.summary}"
@@ -83,6 +84,7 @@ class Turn:
     labels_added: list[Label] = field(default_factory=list)
     stopped: str | None = None  # why the loop ended early (cost cap, refusal, max_tokens)
     base_question: str = ""  # the question a what-if re-answers (else the question itself)
+    user_text: str | None = None  # what history and memory store as the user's message, if not the question
     change_line: str | None = None
     replayable: list[tuple[str, dict, ToolResult]] = field(default_factory=list)  # the path a what-if re-runs
 
@@ -101,7 +103,8 @@ class Turn:
 class Agent:
     def __init__(self, toolbox: Toolbox, transport: Transport | None = None, model: str | None = None,
                  max_cost: float | None = None, log: Callable[[str], None] = print,
-                 on_tool: Callable[[ToolCall], None] | None = None, document: str = "", memory=None):
+                 on_tool: Callable[[ToolCall], None] | None = None, document: str = "", memory=None,
+                 on_tool_start: Callable[[str, str, dict], None] | None = None):
         settings = get_settings()
         self.toolbox = toolbox
         self.model = model or require_model("model_agent")
@@ -109,7 +112,8 @@ class Agent:
         self.transport = transport or anthropic_transport(settings.server_fallback and "haiku" not in self.model)
         self.max_cost = max_cost
         self.log = log
-        self.on_tool = on_tool
+        self.on_tool = on_tool  # after a tool ran
+        self.on_tool_start = on_tool_start  # before it runs: (tool-use id, name, args)
         self.static = load("agent_system").text + (f"\n\nThe code: {document}" if document else "")
         self.history: list[dict] = []
         self.turns: list[Turn] = []
@@ -165,7 +169,8 @@ class Agent:
                    f"Re-run results: {result.for_model()}\n\n"
                    f"Answer the question again in full, from these results only: {base}\n"
                    f"Start your answer with this line exactly: {line}")
-        return self.ask(message, final_first=True, base_question=base, replayed=result)
+        return self.ask(message, final_first=True, base_question=base, replayed=result,
+                        user_text=f"(facts edited) {base}")
 
     # ---- request ------------------------------------------------------------------------
 
@@ -187,8 +192,8 @@ class Agent:
     # ---- the loop -----------------------------------------------------------------------
 
     def ask(self, question: str, final_first: bool = False, base_question: str | None = None,
-            replayed: ToolResult | None = None) -> Turn:
-        turn = Turn(question, base_question=base_question or question)
+            replayed: ToolResult | None = None, user_text: str | None = None) -> Turn:
+        turn = Turn(question, base_question=base_question or question, user_text=user_text)
         self._replayed = replayed  # set again by replay_last when a fact changes during the turn
         self._facts_at_start = self.toolbox.store.all()
         facts_text = facts_block(self.toolbox.store)
@@ -222,8 +227,10 @@ class Agent:
                     used += 1
                     if name == PROCEDURE_TOOL:
                         budget = PROCEDURE_BUDGET
+                    if self.on_tool_start:
+                        self.on_tool_start(block["id"], name, args)
                     result = self.toolbox.run(name, args)
-                    call = ToolCall(name, args, result)
+                    call = ToolCall(name, args, result, block["id"])
                     turn.calls.append(call)
                     if self.on_tool:
                         self.on_tool(call)
@@ -265,12 +272,12 @@ class Agent:
         """Store the turn as text: tool results become one-line summaries. With a memory
         graph, also the messages and the question's answer path."""
         tools = "\n".join(f"- {c.line()}" for c in turn.calls)
-        self.history.append({"role": "user", "content": turn.question})
+        self.history.append({"role": "user", "content": turn.user_text or turn.question})
         self.history.append({"role": "assistant",
                              "content": (f"[Tools used for this answer:\n{tools}]\n\n" if tools else "") + turn.answer})
         self.turns.append(turn)
         if self.memory is not None:
-            self.memory.add_message("user", turn.question)
+            self.memory.add_message("user", turn.user_text or turn.question)
             self.memory.add_message("assistant", turn.answer)
             calls = [{"tool": n, "args": a, "summary": r.summary, "outcome": outcome(n, r)}
                      for n, a, r in turn.replayable]

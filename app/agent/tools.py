@@ -12,6 +12,14 @@ from app.agent.facts import SOURCES, Fact, FactStore
 from app.agent.results import Label, ToolResult
 from app.agent.search import find_entry
 
+SUBSCRIPTS = str.maketrans("₀₁₂₃₄₅₆₇₈₉ₐₑₒₓₕₖₗₘₙₚₛₜ", "0123456789aeoxhklmnpst")
+
+
+def symbol_key(name: str, case: bool = False) -> str:
+    """'C_1', 'C₁' -> 'C1' (with case=False: 'c1')."""
+    text = (name or "").translate(SUBSCRIPTS)
+    return "".join(ch for ch in (text if case else text.lower()) if ch.isalnum())
+
 PROCEDURE_TOOL = "plan_procedure"
 
 
@@ -151,13 +159,32 @@ class Toolbox:
                                  bool(a.get("save_as_facts")))
         return compute_equation(self.graph, target, self.store.all(), a.get("solve_for"))
 
+    def parameter_id(self, given: str) -> tuple[str, bool]:
+        """(id, is_parameter): a parameter id as given, else the one parameter whose id,
+        symbol or alias matches it with underscores and subscripts ignored ('C1' -> 'C_1',
+        'Sa' -> 'S_a'): matching case first, then any case. An ambiguous or unknown name
+        stays as given (a descriptor)."""
+        node = gt.find_node(self.graph, given)
+        if node and node[0] == "Parameter":
+            return given, True
+        rows = self.graph.ro_query("MATCH (p:Parameter) RETURN p.id, p.symbol, p.aliases").result_set
+        for case in (True, False):
+            key = symbol_key(given, case)
+            found = {pid for pid, sym, aliases in rows
+                     if key in {symbol_key(pid, case), symbol_key(sym or "", case)}
+                     | {symbol_key(a, case) for a in aliases or []}}
+            if found:
+                return (found.pop(), True) if len(found) == 1 else (given, False)
+        return given, False
+
     def save_facts(self, items: list[dict]) -> ToolResult:
         changes, saved, labels = [], [], []
         for item in items:
-            node = gt.find_node(self.graph, str(item["id"]))
-            fact = Fact(id=str(item["id"]), value=item["value"], unit=item.get("unit"),
-                        source=item.get("source", "user"), label=item.get("label"),
-                        kind="parameter" if node and node[0] == "Parameter" else "descriptor")
+            fid, is_param = self.parameter_id(str(item["id"]))
+            label = item.get("label") or (str(item["id"]) if fid != str(item["id"]) else None)
+            fact = Fact(id=fid, value=item["value"], unit=item.get("unit"),
+                        source=item.get("source", "user"), label=label,
+                        kind="parameter" if is_param else "descriptor")
             previous = self.store.set(fact)
             saved.append(fact.display())
             if fact.source == "assumed":

@@ -2,9 +2,15 @@
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
+from app.api.chat_routes import mount_web, router as chat_router
+from app.api.ingest_routes import router as ingest_router
+from app.api.review_routes import router as review_router
+from app.api.session_routes import router as session_router
 from app.graph import connection
 
 app = FastAPI(title="Code Graph Agent")
+for router in (chat_router, ingest_router, session_router, review_router):
+    app.include_router(router)
 
 
 @app.get("/health")
@@ -19,3 +25,6 @@ def health() -> JSONResponse:
     if error:
         body["error"] = error
     return JSONResponse(body, status_code=200 if falkordb_ok else 503)
+
+
+mount_web(app)  # last: it serves "/" and the static pages in web/

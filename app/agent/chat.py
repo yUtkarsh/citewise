@@ -29,6 +29,7 @@ class LazyEncoder:
     def __init__(self):
         self._encoder = None
         self._error: Exception | None = None
+        self._lock = threading.Lock()  # one encode at a time (several chat sessions share it)
         self._thread = threading.Thread(target=self._load, daemon=True)
         self._thread.start()
 
@@ -43,7 +44,8 @@ class LazyEncoder:
         self._thread.join()
         if self._encoder is None:
             raise RuntimeError(f"embedding model unavailable: {self._error}")
-        return self._encoder.encode(texts)
+        with self._lock:
+            return self._encoder.encode(texts)
 
 
 def print_call(call: ToolCall) -> None:
