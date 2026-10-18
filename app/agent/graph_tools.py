@@ -118,6 +118,20 @@ def get_dependencies(graph, node_id: str, direction: str = "upstream", depth: in
     return ToolResult(summary, {"start": _brief(*start), "direction": direction, "nodes": found}, t, labels)
 
 
+def note_rows_of(graph, table_id: str) -> list[dict]:
+    """Rows of text printed with the table but holding no values: notes such as 'NOTE:
+    Straight-line interpolation shall be used…', which calculate can cite as note_row."""
+    out = []
+    for rid, cells, is_header, values in graph.ro_query(
+            "MATCH (:Table {id: $id})-[:HAS_ROW]->(r:Row) RETURN r.id, r.cells, r.is_header, r.values "
+            "ORDER BY r.index", {"id": table_id}).result_set:
+        text = " ".join(c for c in json.loads(cells or "[]") if c).strip()
+        if is_header or json.loads(values or "[]") or len(text) < 25 or sum(ch.isalpha() for ch in text) < 15:
+            continue
+        out.append({"row": rid, "text": text[:300]})
+    return out
+
+
 def get_table(graph, table_id: str) -> ToolResult:
     """A table's columns, row conditions and footnotes, without its values: numbers come
     from compute, which matches the row and maps the columns."""
@@ -140,6 +154,10 @@ def get_table(graph, table_id: str) -> ToolResult:
         t.edge(table_id, "HAS_FOOTNOTE", n.get("id"))
     governing = graph.ro_query("MATCH (c:Clause)-[:CONTAINS]->(:Table {id: $id}) RETURN c.id, c.title",
                                {"id": table_id}).result_set
+    note_rows = note_rows_of(graph, table_id)
+    for n in note_rows:
+        t.node("Row", n["row"])
+        t.edge(table_id, "HAS_ROW", n["row"])
     for cid, _ in governing:
         t.node("Clause", cid)
         t.edge(cid, "CONTAINS", table_id)
@@ -151,9 +169,11 @@ def get_table(graph, table_id: str) -> ToolResult:
             "rows": [{"row": r["id"], "conditions": r["_conditions"]} for r in rows],
             "footnotes": [{"marker": n.get("marker"), "text": n.get("text"), "kind": n.get("rule_kind"),
                            "rule": n.get("rule"), "applies_to_rows": n.get("applies_to_rows")} for n in notes],
+            "note_rows": note_rows,
             "governing_clauses": [{"id": i, "title": tt} for i, tt in governing],
             "values": "not shown here: call compute with this table id, the row_id you matched and your reason"}
-    summary = f"{table_id}: {len(rows)} rows, {len(data['value_columns'])} value columns, {len(notes)} footnotes"
+    summary = f"{table_id}: {len(rows)} rows, {len(data['value_columns'])} value columns, {len(notes)} footnotes, " \
+              f"{len(note_rows)} note rows"
     return ToolResult(summary, data, t, labels)
 
 

@@ -138,3 +138,11 @@ def test_warnings_reach_the_page_and_the_question_and_a_session_keeps_its_graph(
     stream.forget_sessions()  # a restarted server refuses it too, from the memory graph
     refused = hook(Script(), "Anything?", "s-warn", graph_name="code_other")
     assert refused[0]["data"]["code"] == "session_graph"
+
+
+def test_a_tables_note_rows_are_listed_so_they_can_be_cited(graph):
+    from app.agent.graph_tools import get_clause
+    r = get_clause(graph, T)
+    assert r.data["note_rows"] == [{"row": f"{T}#r2", "text": "NOTE: Straight-line interpolation shall be used for "
+                                                             "intermediate values of S."}]
+    assert "1 note rows" in r.summary
