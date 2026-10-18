@@ -39,6 +39,10 @@ class Clause:
     text_parts: list[str] = field(default_factory=list)
     text: str = ""
     order: int = 0
+    # (page, bbox) per page and column the clause's text covers: what Pass 2 crops on the fly
+    regions: list[tuple[int, Rect]] = field(default_factory=list)
+    # normalized text of spans flagged in Pass 1 or drawn in an unmapped font
+    suspect_spans: list[str] = field(default_factory=list)
 
 
 @dataclass

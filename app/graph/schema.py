@@ -12,7 +12,9 @@ GRAPH_SCHEMA_VERSION = "graph-v1"
 QUOTE_CHARS = 300
 
 NODE_LABELS = ("Document", "Clause", "Table", "Row", "Footnote", "Equation", "WhereItem",
-               "Figure", "ExternalCode", "FlaggedLine")
+               "Figure", "ExternalCode", "FlaggedLine",
+               # Pass 2
+               "Parameter", "Term", "Condition", "Requirement", "Exception", "SymbolCorrection")
 
 INDEXES = [
     "CREATE INDEX FOR (n:{label}) ON (n.id)".format(label=label) for label in NODE_LABELS

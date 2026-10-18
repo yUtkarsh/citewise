@@ -1,4 +1,5 @@
-"""Step 3a.8: line-level symbol warnings, recorded per page with a line crop.
+"""Step 3a.8: line-level symbol warnings, recorded per page with the line bbox
+(Pass 2 renders the line crop on the fly).
 
 Uses the shared rules in ``app.ingest.text_checks``. A superscript's footnote
 scope is its page, or every page of the merged table it sits in.

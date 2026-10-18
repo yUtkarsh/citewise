@@ -21,6 +21,8 @@ class Settings:
     model_agent: str
     model_review: str
     model_profile: str
+    clause_crops: str  # always | flagged (SPEC Step 3b.4)
+    server_fallback: bool  # send `fallbacks: "default"` on models that support it
 
 
 @lru_cache
@@ -34,6 +36,8 @@ def get_settings() -> Settings:
         model_agent=os.getenv("MODEL_AGENT", ""),
         model_review=os.getenv("MODEL_REVIEW", ""),
         model_profile=os.getenv("MODEL_PROFILE", ""),
+        clause_crops=os.getenv("CLAUSE_CROPS", "always").strip().lower(),
+        server_fallback=os.getenv("SERVER_FALLBACK", "1").strip() not in ("0", "false", "no", ""),
     )
 
 

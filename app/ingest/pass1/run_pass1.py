@@ -79,7 +79,7 @@ def run_pass1(
     lap("objects")
 
     flagged = flag_lines(ctx.page_lines, tables, profile)
-    _crop_all(doc, crops_dir, tables, equations, figures, flagged)
+    _crop_all(doc, crops_dir, tables, equations, figures)
     _flag_owners(skel, flagged)
     lap("crops")
 
@@ -148,7 +148,7 @@ def _figures(doc: pymupdf.Document, skel: Skeleton) -> list[Figure]:
     return figures
 
 
-def _crop_all(doc, crops_dir: Path, tables, equations, figures, flagged) -> None:
+def _crop_all(doc, crops_dir: Path, tables, equations, figures) -> None:
     for eq in equations:
         eq.crop = crop(doc, eq.page, eq.bbox, crops_dir / "equations" / f"{safe_name(eq.id)}_p{eq.page}.png")
     for table in tables:
@@ -163,8 +163,7 @@ def _crop_all(doc, crops_dir: Path, tables, equations, figures, flagged) -> None
                                      crops_dir / "tables" / f"{safe_name(table.id)}_header_p{first.page}.png")
     for fig in figures:
         fig.crop = crop(doc, fig.page, fig.bbox, crops_dir / "figures" / f"{safe_name(fig.id)}_p{fig.page}.png")
-    for line in flagged:
-        line.crop = crop(doc, line.page, line.bbox, crops_dir / "lines" / f"{safe_name(line.id)}.png", padding=2)
+    # Flagged lines and clause regions are never stored: Pass 2 renders them on the fly.
 
 
 def _flag_owners(skel: Skeleton, flagged: list[FlaggedLine]) -> None:

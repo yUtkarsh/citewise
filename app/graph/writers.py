@@ -32,6 +32,8 @@ def _clause_props(c: Clause, unresolved: list[str]) -> dict:
         "id": c.id, "number": c.number, "stream": c.stream, "kind": c.kind, "title": c.title,
         "text": c.text, "depth": c.depth, "page_end": c.page_end, "order": c.order,
         "unresolved_refs": unresolved[:50],
+        "regions": json.dumps([[page, *[round(float(v), 1) for v in box]] for page, box in c.regions]),
+        "suspect_spans": json.dumps(c.suspect_spans, ensure_ascii=False),
         **provenance(c.page, c.bbox, f"{c.number} {c.title}", "pymupdf"),
     }
 
@@ -80,10 +82,12 @@ def build_rows(result: Pass1Result, profile: Profile, doc_id: str, file_hash: st
             g.node("Footnote", {"id": fid, "marker": f.marker, "text": f.text,
                                 **provenance(f.page, f.bbox, f.text, "pymupdf")})
             g.edge(("Table", t.id), "HAS_FOOTNOTE", ("Footnote", fid))
+        method_on = {s.page: s.method for s in t.segments}
         for row in t.rows:
             rid = f"{t.id}#r{row.index}"
             g.node("Row", {"id": rid, "index": row.index, "cells": json.dumps(row.cells, ensure_ascii=False),
                            "is_header": row.is_header, "markers": row.markers,
+                           "grid_method": method_on.get(row.page, first.method),
                            **provenance(row.page, row.bbox, " | ".join(c for c in row.cells if c), first.method)})
             g.edge(("Table", t.id), "HAS_ROW", ("Row", rid), {"index": row.index})
             for marker in row.markers:
@@ -131,7 +135,7 @@ def build_rows(result: Pass1Result, profile: Profile, doc_id: str, file_hash: st
                    {"text": ref.text, "method": ref.method})
 
     for fl in result.flagged:
-        g.node("FlaggedLine", {"id": fl.id, "text": fl.text, "reasons": fl.reasons, "crop": fl.crop,
+        g.node("FlaggedLine", {"id": fl.id, "text": fl.text, "reasons": fl.reasons,
                                **provenance(fl.page, fl.bbox, fl.text, "pymupdf")})
         if fl.clause_id:
             g.edge(("Clause", fl.clause_id), "HAS_FLAG", ("FlaggedLine", fl.id))
@@ -152,9 +156,10 @@ def _batches(rows: list[dict]):
         yield rows[i:i + BATCH]
 
 
-def write(graph, rows: GraphRows) -> dict[str, int]:
+def write(graph, rows: GraphRows, indexes: bool = True) -> dict[str, int]:
     """MERGE every node by id and every edge by (src, type, dst). Returns counts written."""
-    ensure_indexes(graph)
+    if indexes:
+        ensure_indexes(graph)
     counts = {}
     for label, nodes in rows.nodes.items():
         for batch in _batches(nodes):

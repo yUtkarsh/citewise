@@ -87,11 +87,21 @@ def test_link_annotations_resolve_to_the_heading_they_point_at(tmp_path):
 
 # ---- warnings ----------------------------------------------------------------
 
-def test_bracket_fixture_flags_private_use_lines_with_crops(fema_profile, tmp_path):
+def test_bracket_fixture_flags_private_use_lines_without_storing_crops(fema_profile, tmp_path):
     result = pass1("equations_brackets.pdf", fema_profile, tmp_path)
     flagged = [f for f in result.flagged if "private_use" in f.reasons]
     assert flagged
-    assert all(f.crop for f in flagged)
+    assert all(f.bbox and f.crop is None for f in flagged)  # Pass 2 renders line crops on the fly
+    assert not list(tmp_path.rglob("lines/*.png"))
+
+
+def test_suspect_spans_are_flagged_or_unmapped_spans():
+    from app.ingest.pass1.segment import suspect_spans
+    from app.ingest.pdf_lines import Line
+    line = Line(page=1, bbox=(0, 0, 200, 10), spans=[
+        span("loads", 10), span("p", 40, font="OpaqueFont1"), span("ﬃﬃﬃ", 50, font="OpaqueFont1"),
+        span("x", 80, font="Symbol"), span("", 90), span("plain", 120)])
+    assert suspect_spans([line], ["^OpaqueFont1$"]) == ["p", "ﬃﬃﬃ", "x", ""]
 
 
 def span(text, x, y=100.0, size=9.0, font="Helvetica"):
@@ -119,3 +129,39 @@ def test_superscript_scope_is_the_whole_merged_table(fema_profile):
 def test_ascii_from_symbol_font_line_is_flagged(fema_profile):
     line = Line(1, (50, 90, 80, 100), [span("q", 50, font="Symbol")])
     assert flag_lines({1: [line]}, [], fema_profile)[0].reasons == ["symbol_font_ascii"]
+
+
+def test_equation_boxes_split_at_the_widest_gap_between_numbers(fema_profile, tmp_path):
+    """Lines between two equation numbers in a column go to one equation or the other,
+    divided at the widest vertical gap; a box never runs into the next equation's
+    numerator or exponent."""
+    from app.ingest.pass1.blocks import load_context
+    from app.ingest.pass1.equations import find_equations
+
+    doc = pymupdf.open(FIXTURES / "equations.pdf")
+    ctx = load_context(doc, fema_profile, [1])
+    found = find_equations(ctx.page_lines[1], fema_profile, ctx.body)
+    by_col = {}
+    for eq, members in found:
+        by_col.setdefault(members[0].col, []).append((eq, members))
+    pairs = 0
+    for items in by_col.values():
+        items.sort(key=lambda x: x[0].bbox[1])
+        for (a, am), (b, bm) in zip(items, items[1:]):
+            between = b.bbox[1] - a.bbox[3]
+            inner = [y.bbox[1] - x.bbox[3] for m in (am, bm)
+                     for x, y in zip(sorted(m, key=lambda ln: ln.bbox[1]), sorted(m, key=lambda ln: ln.bbox[1])[1:])]
+            assert between >= max(inner, default=0) - 0.5, (a.id, b.id)
+            pairs += 1
+    assert pairs
+
+
+def test_split_point_takes_the_widest_gap():
+    from app.ingest.pass1.equations import split_point
+    from app.ingest.pdf_lines import Line
+
+    def ln(y0, y1):
+        return Line(page=1, bbox=(0, y0, 100, y1))
+
+    upper, sup, num, lower = ln(100, 110), ln(130, 134), ln(135, 145), ln(150, 160)
+    assert split_point(upper, lower, [upper, sup, num, lower]) == 130

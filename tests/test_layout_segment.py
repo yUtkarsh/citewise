@@ -80,3 +80,21 @@ def test_prose_after_the_first_heading_belongs_to_a_clause(fema_profile, name):
     assert all(skel.seg.owner[id(b)] is not None for b in blocks[first:])
     assert all(skel.seg.owner[id(b)] is None for b in blocks[:first])  # continues an earlier clause
     assert skel.seg.coverage > 0.5
+
+
+@pytest.mark.parametrize("name", ["text.pdf", "commentary.pdf", "equations.pdf"])
+def test_clause_regions_cover_heading_and_stay_on_page(fema_profile, name):
+    """Every clause has a region per page and column it covers: one region holds its
+    heading, regions sit inside the page, and on a two-column page no region crosses
+    the centre unless the text there is full width."""
+    doc = pymupdf.open(FIXTURES / name)
+    skel = build_skeleton(doc, fema_profile, pages=[1])
+    width, height = doc[0].rect.width, doc[0].rect.height
+    for clause in skel.seg.clauses:
+        assert clause.regions
+        assert {p for p, _ in clause.regions} <= set(range(clause.page, clause.page_end + 1))
+        h = clause.bbox
+        assert any(b[0] <= h[0] + 1 and b[1] <= h[1] + 1 and b[2] >= h[2] - 1 and b[3] >= h[3] - 1
+                   for p, b in clause.regions if p == clause.page)
+        for _, b in clause.regions:
+            assert 0 <= b[0] < b[2] <= width + 1 and 0 <= b[1] < b[3] <= height + 1

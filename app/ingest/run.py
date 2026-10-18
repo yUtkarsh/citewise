@@ -1,8 +1,11 @@
-"""Ingest one PDF: profile (built or loaded), then Pass 1 into FalkorDB.
+"""Ingest one PDF: profile (built or loaded), then Pass 1 and Pass 2 into FalkorDB.
 
 Usage (PowerShell):
     python -m app.ingest.run data/fema356.pdf --pass1 [--fresh] [--reprofile]
                              [--profile PATH] [--no-docling] [--no-write]
+    python -m app.ingest.run data/fema356.pdf --pass2 [--pages 120-140,200] [--chapters 2,3]
+                             [--jobs notation,definitions,clauses,tables] [--limit N]
+                             [--concurrency 12] [--redo] [--dry-run] [--max-cost 9.0]
 """
 from __future__ import annotations
 
@@ -27,6 +30,55 @@ from app.profile.schema import Profile
 
 REPORT_DIR = ROOT / "data" / "reports"
 CROPS_DIR = ROOT / "data" / "crops"
+JOBS_DIR = ROOT / "data" / "jobs"
+
+
+def page_set(text: str | None) -> set[int] | None:
+    """'120-140,200' -> {120, ..., 140, 200}."""
+    if not text:
+        return None
+    pages = set()
+    for part in text.split(","):
+        lo, _, hi = part.strip().partition("-")
+        pages |= set(range(int(lo), int(hi or lo) + 1))
+    return pages
+
+
+def run_pass2_cli(doc, pdf_hash: str, profile: Profile, name: str, args, log) -> int:
+    import asyncio
+
+    from app.config import get_settings
+    from app.ingest.pass2.images import CLAUSE_CROP_MODES
+    from app.ingest.pass2.jobs import KINDS
+    from app.ingest.pass2.records import from_graph
+    from app.ingest.pass2.run_pass2 import GraphSink, Pass2Options, run_pass2
+
+    crop_mode = args.clause_crops or get_settings().clause_crops
+    if crop_mode not in CLAUSE_CROP_MODES:
+        print(f"CLAUSE_CROPS must be one of {CLAUSE_CROP_MODES}, not {crop_mode!r}")
+        return 2
+    jobs = set(args.jobs.split(",")) if args.jobs else set(KINDS)
+    if unknown := jobs - set(KINDS):
+        print(f"unknown jobs: {sorted(unknown)} (choose from {', '.join(KINDS)})")
+        return 2
+    graph = get_db().select_graph(name)
+    skel = from_graph(graph, name)
+    if not skel.clauses:
+        print(f"graph {name} has no skeleton: run Pass 1 first (--pass1)")
+        return 2
+    opts = Pass2Options(jobs=jobs, pages=page_set(args.pages),
+                        chapters=set(args.chapters.split(",")) if args.chapters else None, limit=args.limit,
+                        concurrency=args.concurrency, redo=args.redo, dry_run=args.dry_run, crop_mode=crop_mode,
+                        max_cost=args.max_cost)
+    sink = None if args.dry_run else GraphSink(graph)
+    report = asyncio.run(run_pass2(doc, pdf_hash, profile, skel, sink, opts,
+                                   JOBS_DIR / f"{pdf_hash[:12]}_pass2.jsonl", log=log))
+    REPORT_DIR.mkdir(parents=True, exist_ok=True)
+    out = REPORT_DIR / f"{pdf_hash[:12]}_pass2{'_dryrun' if args.dry_run else ''}.json"
+    out.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+    print(json.dumps(report, indent=2, ensure_ascii=False))
+    print(f"report: {out.relative_to(ROOT)}")
+    return 0
 
 
 def get_profile(doc: pymupdf.Document, pdf_hash: str, args, page_map, log) -> Profile:
@@ -118,6 +170,16 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--profile", help="use this profile JSON instead of building one")
     parser.add_argument("--no-docling", action="store_true", help="find_tables() only (fast)")
     parser.add_argument("--no-write", action="store_true", help="skip FalkorDB writes")
+    parser.add_argument("--pass2", action="store_true", help="run Pass 2 (Claude extraction) on the skeleton")
+    parser.add_argument("--pages", help="Pass 2: only clauses and tables on these pages, e.g. 120-140,200")
+    parser.add_argument("--chapters", help="Pass 2: only these top-level clause numbers, e.g. 2,3")
+    parser.add_argument("--jobs", help="Pass 2: comma-separated subset of notation,definitions,clauses,tables")
+    parser.add_argument("--limit", type=int, help="Pass 2: at most N clause and N table jobs")
+    parser.add_argument("--concurrency", type=int, default=12, help="Pass 2: calls in parallel (default 12)")
+    parser.add_argument("--redo", action="store_true", help="Pass 2: ignore the job state (the cache still applies)")
+    parser.add_argument("--dry-run", action="store_true", help="Pass 2: plan calls and estimate cost; send nothing")
+    parser.add_argument("--clause-crops", choices=["always", "flagged"], help="Pass 2: override CLAUSE_CROPS")
+    parser.add_argument("--max-cost", type=float, help="Pass 2: stop starting calls once estimated spend reaches this (USD)")
     args = parser.parse_args(argv)
 
     start = time.time()
@@ -128,6 +190,8 @@ def main(argv: list[str]) -> int:
     page_map = build_page_map(doc)
     log(f"page map: {doc.page_count} pages")
     profile = get_profile(doc, pdf_hash, args, page_map, log)
+    if args.pass2 and not args.pass1:
+        return run_pass2_cli(doc, pdf_hash, profile, graph_name(pdf), args, log)
     if not args.pass1:
         return 0
 
@@ -151,6 +215,8 @@ def main(argv: list[str]) -> int:
     out.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
     print_summary(report)
     print(f"report: {out.relative_to(ROOT)}")
+    if args.pass2 and not args.no_write:
+        return run_pass2_cli(doc, pdf_hash, profile, name, args, log)
     return 0
 
 

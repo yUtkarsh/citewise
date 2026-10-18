@@ -1,5 +1,8 @@
 """Cached, validated Claude calls.
 
+Two paths share the cache: ``call_structured`` (sync, text only; the profile step) and
+``call_validated`` (async, text and images, never raises on invalid output; Pass 2).
+
 Every call is cached under ``data/cache/<prompt name>/<key>.json`` where the key is
 the hash of (input text, schema version, prompt version). A cache hit never builds a
 client. Output is parsed into a Pydantic model; on a validation error the call is
@@ -7,10 +10,12 @@ retried once with the error appended, then the error is raised.
 """
 from __future__ import annotations
 
+import asyncio
+from dataclasses import dataclass, field
 import hashlib
 import json
 from pathlib import Path
-from typing import Callable, TypeVar
+from typing import Any, Awaitable, Callable, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
@@ -123,3 +128,158 @@ def call_structured(
         path.write_text(json.dumps(record, ensure_ascii=False, indent=1), encoding="utf-8")
         return result
     raise AssertionError("unreachable")
+
+
+# ---- async calls with images (Pass 2) ------------------------------------------------
+#
+# Pass 2 calls carry images, run many at a time, and must not raise when a result stays
+# invalid: it is stored as flagged instead. The cache key is the same hash as above, over
+# the call's text plus its image keys.
+
+FALLBACK_BETA = "server-side-fallback-2026-07-01"  # `fallbacks: "default"` (Claude API only)
+RETRY_NOTE = ("Your previous answer failed validation. Fix these problems and answer again in full; "
+              "leave out anything you cannot support from the input:\n")
+
+
+@dataclass
+class CallSpec:
+    model: str
+    system: str
+    content: list[dict] | Callable[[], list[dict]]  # user content blocks; a callable is built only on a cache miss
+    output: type[BaseModel]
+    max_tokens: int = 16000
+    effort: str | None = "low"
+    fallbacks: bool = False
+
+
+@dataclass
+class Reply:
+    text: str
+    model: str
+    stop_reason: str
+    usage: dict[str, int]
+
+
+@dataclass
+class CallResult:
+    output: BaseModel | None
+    raw: str | None
+    issues: list[Any]
+    attempts: int
+    usages: list[dict]  # one per API attempt: model plus token counts
+    from_cache: bool = False
+    refused: bool = False
+    parse_error: str | None = None
+    retry_reasons: list[str] = field(default_factory=list)  # what made the first attempt retry
+
+
+AsyncTransport = Callable[[CallSpec], Awaitable[Reply]]
+Checker = Callable[[BaseModel], list]  # returns issues; an issue has .retry and .detail
+
+
+_client = None
+
+
+def _async_client():
+    global _client
+    if _client is None:
+        import anthropic
+
+        _client = anthropic.AsyncAnthropic(max_retries=0)  # the Pass 2 runner owns retries and backoff
+    return _client
+
+
+def _usage(message) -> dict[str, int]:
+    u = message.usage
+    return {"input_tokens": u.input_tokens or 0, "output_tokens": u.output_tokens or 0,
+            "cache_read_input_tokens": getattr(u, "cache_read_input_tokens", 0) or 0,
+            "cache_creation_input_tokens": getattr(u, "cache_creation_input_tokens", 0) or 0}
+
+
+async def anthropic_async_transport(spec: CallSpec) -> Reply:
+    """One streamed structured-output request at the spec's effort, with server-side
+    fallback when the spec asks for it."""
+    client = _async_client()
+    output_config: dict = {"format": {"type": "json_schema", "schema": strict_schema(spec.output)}}
+    if spec.effort:
+        output_config["effort"] = spec.effort
+    kwargs = dict(model=spec.model, max_tokens=spec.max_tokens,
+                  system=[{"type": "text", "text": spec.system, "cache_control": {"type": "ephemeral"}}],
+                  messages=[{"role": "user", "content": spec.content}], output_config=output_config)
+    if spec.fallbacks:
+        stream = client.beta.messages.stream(**kwargs, betas=[FALLBACK_BETA], fallbacks="default")
+    else:
+        stream = client.messages.stream(**kwargs)
+    async with stream as s:
+        message = await s.get_final_message()
+    text = "".join(block.text for block in message.content if getattr(block, "type", "") == "text")
+    return Reply(text=text, model=message.model, stop_reason=message.stop_reason or "", usage=_usage(message))
+
+
+def _record_usage(reply: Reply) -> dict:
+    return {"model": reply.model, **reply.usage}
+
+
+async def call_validated(
+    spec: CallSpec,
+    prompt: Prompt,
+    cache_text: str,
+    schema_version: str,
+    check: Checker,
+    transport: AsyncTransport | None = None,
+    cache_dir: Path = CACHE_DIR,
+) -> CallResult:
+    """Claude's answer for one Pass 2 job: parsed, checked, retried once with the issues
+    that ask for a retry, and cached (flagged results too, so a resume never pays twice).
+    A cache hit is re-checked but never retried."""
+    path = cache_path(cache_key(cache_text, schema_version, prompt), prompt, cache_dir)
+    if path.is_file():
+        record = json.loads(path.read_text(encoding="utf-8"))
+        output, issues, error = _parse_and_check(record["raw"], spec.output, check)
+        return CallResult(output, record["raw"], issues, record.get("attempts", 1), record.get("usages", []),
+                          from_cache=True, refused=record.get("refused", False), parse_error=error,
+                          retry_reasons=record.get("retry_reasons", []))
+
+    send = transport or anthropic_async_transport
+    if callable(spec.content):
+        spec = CallSpec(**{**spec.__dict__, "content": await asyncio.to_thread(spec.content)})
+    usages, raw, output, issues, error, refused = [], None, None, [], None, False
+    attempt, problems = 0, []
+    for attempt in (1, 2):
+        content = spec.content
+        if attempt == 2:
+            problems = [error] if error else [i.detail for i in issues if i.retry]
+            content = spec.content + [{"type": "text", "text": RETRY_NOTE + "\n".join(f"- {p}" for p in problems)}]
+        reply = await send(CallSpec(**{**spec.__dict__, "content": content}))
+        usages.append(_record_usage(reply))
+        if reply.stop_reason == "refusal":
+            refused, raw, output, issues, error = True, None, None, [], "request refused"
+            break
+        raw = reply.text
+        if reply.stop_reason == "max_tokens":
+            output, issues, error = None, [], "output truncated at max_tokens"
+        else:
+            output, issues, error = _parse_and_check(raw, spec.output, check)
+        if not error and not any(i.retry for i in issues):
+            break
+    path.parent.mkdir(parents=True, exist_ok=True)
+    record = {"prompt": prompt.name, "prompt_version": prompt.version, "model": spec.model,
+              "schema_version": schema_version, "raw": raw if raw is not None else "", "attempts": attempt,
+              "usages": usages, "refused": refused, "retry_reasons": problems}
+    path.write_text(json.dumps(record, ensure_ascii=False, indent=1), encoding="utf-8")
+    return CallResult(output, raw, issues, attempt, usages, refused=refused, parse_error=error,
+                      retry_reasons=problems)
+
+
+def is_cached(cache_text: str, schema_version: str, prompt: Prompt, cache_dir: Path = CACHE_DIR) -> bool:
+    return cache_path(cache_key(cache_text, schema_version, prompt), prompt, cache_dir).is_file()
+
+
+def _parse_and_check(raw: str, output_type: type[BaseModel], check: Checker):
+    if not raw:
+        return None, [], "empty answer"
+    try:
+        output = output_type.model_validate_json(raw)
+    except ValidationError as exc:
+        return None, [], f"the answer does not match the schema: {exc}"
+    return output, check(output), None

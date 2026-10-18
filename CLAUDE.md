@@ -52,6 +52,8 @@ inside the `.venv` for Python packages, and ask before every system-level instal
 - Start FalkorDB: `docker compose up -d` (browser UI on http://localhost:3000)
 - Run app: `uvicorn app.api.main:app --reload`
 - Ingest (profile + Pass 1): `python -m app.ingest.run data/fema356.pdf --pass1` (`--fresh`, `--reprofile`, `--no-docling`)
+- Pass 2: `python -m app.ingest.run data/fema356.pdf --pass2` (`--pages 120-140`, `--chapters 2,3`, `--jobs`, `--limit`, `--dry-run`, `--redo`, `--clause-crops`)
+- Pass 2 checkpoint on fixtures: `python -m scripts.pass2_fixtures --clause-crops always` (real API calls; `--dry-run` first)
 - Tests: `pytest -q` (Docling test: set `RUN_SLOW=1`)
 
 ## Environment (`.env`, never committed)

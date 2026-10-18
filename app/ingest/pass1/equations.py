@@ -3,7 +3,9 @@
 An equation number is a span matching the profile's ``equation_number`` that sits
 at the right edge of its column, alone or after a clear gap. The equation box is
 the number line plus the non-prose lines of that column just above and below it,
-which covers stacked fractions drawn as separate spans.
+which covers stacked fractions drawn as separate spans. Lines between two
+equation-number lines are split at the widest vertical gap between them, so a box
+never runs into the numerator (or exponent) of the next equation.
 """
 from __future__ import annotations
 
@@ -74,7 +76,8 @@ def find_equations(
             continue
         num, span = hit
         col_lines = sorted((ln for ln in lines if ln.col == line.col), key=lambda ln: ln.bbox[1])
-        members = [line] + _neighbours(col_lines, line, body, right - left, profile, right)
+        number_lines = [ln for ln in col_lines if number_span(ln, profile, right)]
+        members = [line] + _neighbours(col_lines, line, body, right - left, profile, right, number_lines)
         members = [m for m in members if id(m) not in taken]
         taken.update(id(m) for m in members)
         box = members[0].bbox
@@ -89,10 +92,31 @@ def find_equations(
     return found
 
 
-def _neighbours(col_lines, line, body, col_width, profile, col_right) -> list[Line]:
+def split_point(upper: Line, lower: Line, col_lines: list[Line]) -> float:
+    """y where the lines between two equation-number lines divide: the top of the line
+    after the widest vertical gap in the run upper, ..., lower."""
+    run = [ln for ln in col_lines if ln.bbox[1] >= upper.bbox[3] - 1 and ln.bbox[3] <= lower.bbox[1] + 1
+           and ln is not upper and ln is not lower]  # lines strictly between the two number rows
+    seq = [upper, *sorted(run, key=lambda ln: ln.bbox[1]), lower]
+    gaps = [(seq[k + 1].bbox[1] - seq[k].bbox[3], k) for k in range(len(seq) - 1)]
+    _, k = max(gaps)
+    return seq[k + 1].bbox[1]
+
+
+def own_band(line: Line, col_lines: list[Line], number_lines: list[Line]) -> tuple[float, float]:
+    """(top, bottom) limits of the lines that can belong to this number line's equation."""
+    above = [n for n in number_lines if n.bbox[1] < line.bbox[1] and n is not line]
+    below = [n for n in number_lines if n.bbox[1] > line.bbox[1] and n is not line]
+    top = split_point(max(above, key=lambda n: n.bbox[1]), line, col_lines) if above else float("-inf")
+    bottom = split_point(line, min(below, key=lambda n: n.bbox[1]), col_lines) if below else float("inf")
+    return top, bottom
+
+
+def _neighbours(col_lines, line, body, col_width, profile, col_right, number_lines=()) -> list[Line]:
     """Non-prose lines just above and below the number line, stopping at prose,
-    another equation number or the reach limits."""
+    another equation number, the split with a neighbouring equation, or the reach limits."""
     idx = col_lines.index(line)
+    top, bottom = own_band(line, col_lines, list(number_lines))
     out = []
     for step, reach in ((-1, REACH_ABOVE), (1, REACH_BELOW)):
         i = idx + step
@@ -101,6 +125,9 @@ def _neighbours(col_lines, line, body, col_width, profile, col_right) -> list[Li
             distance = (line.baseline - other.bbox[3]) if step < 0 else (other.bbox[1] - line.baseline)
             if distance > reach or is_prose(other, body, col_width) or number_span(other, profile, col_right):
                 break
+            beside = other.bbox[1] < line.bbox[3] and other.bbox[3] > line.bbox[1]  # on the number's own row
+            if not beside and (other.bbox[1] < top - 0.5 or other.bbox[1] >= bottom - 0.5):
+                break  # past the split with the previous or next equation number
             if re.match(profile.where_block.intro_regex, other.text.strip()):
                 break
             out.append(other)

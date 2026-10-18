@@ -11,12 +11,15 @@ from bisect import bisect_right
 from collections import defaultdict
 from dataclasses import dataclass, field
 
+from app.ingest import text_checks as tc
 from app.ingest.pass1.layout import join_lines, normalize, normalize_line
 from app.ingest.pass1.model import Block, Clause
+from app.ingest.pdf_lines import Line, Rect
 from app.profile.schema import Profile, Stream
 
 COVERAGE_WINDOW = 2  # prose further than this many prose-bearing pages from its heading counts as uncovered
 TEXT_KINDS = {"text", "where", "caption", "footnote"}
+REGION_KINDS = {"heading", "text", "where", "equation", "footnote"}  # tables and figures are cropped on their own
 
 
 @dataclass
@@ -60,6 +63,7 @@ def segment(pages: dict[int, list[Block]], profile: Profile, vocab: set[str], bo
     seg = Segmentation(clauses=[], owner={})
     seen: dict[str, int] = defaultdict(int)
     lines_of: dict[str, list[str]] = defaultdict(list)
+    regions: dict[str, dict[tuple[int, int], Rect]] = defaultdict(dict)
     last_of_stream: dict[str, str] = {}
     # Coverage counts distance in pages that carry prose, so pages holding only a table
     # or a figure do not make the text after them look orphaned.
@@ -86,12 +90,16 @@ def segment(pages: dict[int, list[Block]], profile: Profile, vocab: set[str], bo
                 last_of_stream[stream.name] = cid
                 seg.clauses.append(current)
                 seg.owner[id(block)] = cid
+                _grow(regions[cid], page, block)
                 continue
             seg.owner[id(block)] = current.id if current else None
             if current:
                 current.page_end = page
+                if block.kind in REGION_KINDS:
+                    _grow(regions[current.id], page, block)
                 if block.kind in TEXT_KINDS:
                     lines_of[current.id].extend(normalize_line(ln, profile.unmapped_fonts) for ln in block.lines)
+                    current.suspect_spans.extend(suspect_spans(block.lines, profile.unmapped_fonts))
             if is_prose(block, body_style):
                 n = len(block.text)
                 seg.prose_chars += n
@@ -103,8 +111,37 @@ def segment(pages: dict[int, list[Block]], profile: Profile, vocab: set[str], bo
                     seg.uncovered_by_page[page] = seg.uncovered_by_page.get(page, 0) + n
     for clause in seg.clauses:
         clause.text = join_lines(lines_of[clause.id], vocab)
+        clause.regions = [(page, box) for (page, _), box in sorted(regions[clause.id].items())]
+        clause.suspect_spans = list(dict.fromkeys(clause.suspect_spans))
     assign_parents(seg.clauses, profile)
     return seg
+
+
+def _grow(regions: dict[tuple[int, int], Rect], page: int, block: Block) -> None:
+    """Union the block into the clause's region for its page and column."""
+    key = (page, max(block.col, 0))
+    b = block.bbox
+    if key in regions:
+        r = regions[key]
+        b = (min(r[0], b[0]), min(r[1], b[1]), max(r[2], b[2]), max(r[3], b[3]))
+    regions[key] = tuple(round(float(v), 1) for v in b)
+
+
+def suspect_spans(lines: list[Line], unmapped_fonts: list[str]) -> list[str]:
+    """Text of spans whose characters may not be what is printed: the spans the Pass 1
+    warning rules flag, or any span in an unmapped font. Unmapped spans stay raw, as in
+    the clause text; others are normalized the same way."""
+    out = []
+    for line in lines:
+        for span in line.spans:
+            text = span["text"].strip()
+            if not text:
+                continue
+            if tc.text_from_unmapped_font(span, unmapped_fonts) or tc.is_unmapped_font(span["font"], unmapped_fonts):
+                out.append(text)
+            elif tc.bad_chars(span) or tc.ascii_from_symbol_font(span):
+                out.append(normalize(text))
+    return out
 
 
 def assign_parents(clauses: list[Clause], profile: Profile) -> None:
