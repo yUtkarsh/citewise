@@ -246,6 +246,26 @@ pip install -r requirements.txt
 Copy-Item .env.example .env               # then set ANTHROPIC_API_KEY
 ```
 
+### Load the prebuilt FEMA 356 graph (no PDF, no API spend)
+
+`export/` holds the finished FEMA 356 graph as a FalkorDB dump (12,932 nodes, 21,217 edges,
+6.8 MB gzipped), with indexes and embeddings, and a manifest of its checksum and counts. With
+FalkorDB running and the requirements installed:
+
+```powershell
+python -m scripts.load_graph
+```
+
+This restores `code_fema356` and checks the checksum before loading and the node and edge
+counts after. It refuses to overwrite an existing `code_fema356` unless you pass `--replace`.
+It needs a FalkorDB graph module at the export's version (`falkordb_graph_module` in the
+manifest) or newer: `docker compose pull` updates an older image. The library, review page
+and FalkorDB browser UI (http://localhost:3000) then show the graph; chat at
+`chat.html?graph=code_fema356` also needs `ANTHROPIC_API_KEY`. Equation and clause crop
+images are files under `data/crops/`, not graph data, so they are not in the dump and the
+source panel shows text without them. To re-export after rebuilding:
+`python -m scripts.export_graph --code fema356`.
+
 `.env` (never committed; loaded by the app with python-dotenv, not exported to the shell):
 
 | Variable | Default | Used for |
@@ -374,7 +394,8 @@ app/
   api/          FastAPI routes: chat (SSE), library and ingestion, sessions, review
   prompts/      one versioned file per Claude prompt
 web/            static pages (Cytoscape.js, KaTeX); web/EVENTS.md is the chat event contract
-scripts/        fixtures, font check, table recheck, orphan cleanup, checkpoint questions
+scripts/        fixtures, font check, table recheck, orphan cleanup, graph export/load, checkpoint questions
+export/         the FEMA 356 graph as a FalkorDB dump, for scripts.load_graph
 tests/          pytest suite with fake models and synthetic graphs
 fixtures/       public FEMA 356 pages
 SPEC.md         the full spec, build order and known issues
