@@ -53,7 +53,7 @@ def header_region(graph, table_id: str) -> tuple[list[list[str]], list[str]]:
     """(header rows' cells by column, every header text of the table)."""
     rows = graph.ro_query("MATCH (:Table {id: $id})-[:HAS_ROW]->(r:Row) RETURN r.index, r.cells, r.is_header, r.values "
                           "ORDER BY r.index", {"id": table_id}).result_set
-    first_values = next((i for i, (_, _, _, values) in enumerate(rows) if values), len(rows))
+    first_values = next((i for i, (_, _, _, values) in enumerate(rows) if json.loads(values or "[]")), len(rows))
     head_rows = [json.loads(cells or "[]") for i, (_, cells, is_header, _) in enumerate(rows)
                  if is_header or i < first_values]
     gives = [t for (t,) in graph.ro_query("MATCH (:Table {id: $id})-[e:GIVES]->() RETURN e.header_text",
