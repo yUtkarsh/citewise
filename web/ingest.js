@@ -2,7 +2,7 @@
 "use strict";
 
 const jobId = new URLSearchParams(location.search).get("job");
-const STAGES = ["profiling", "pass1", "pass2", "done"];
+const STAGES = ["profiling", "pass1", "pass2", "indexes", "global", "done"];
 const LOG_LINES = 200;
 const state = { job: null, cy: null, graph: null, counts1: null, counts2: null, layoutTimer: null, logs: [] };
 
@@ -13,7 +13,8 @@ function show(id) {
 function setBadge(stage) {
   const badge = $("#stage-badge");
   const text = { queued: "Queued", profiling: "Profiling", profile_ready: "Check the profile", pass1: "Pass 1",
-                 pass2: "Pass 2", done: "Done", failed: "Failed" }[stage] || stage;
+                 pass2: "Pass 2", indexes: "Indexes", global: "Global pass", done: "Done",
+                 failed: "Failed" }[stage] || stage;
   badge.textContent = text;
   badge.className = `status st-${stage === "done" ? "ready" : stage === "failed" ? "failed" : stage === "profile_ready" ? "partial" : "running"}`;
 }
@@ -192,6 +193,7 @@ function finished() {
   box.hidden = false;
   box.className = "notice ok";
   box.innerHTML = `<strong>Ingestion finished.</strong> ${c2.stopped_at_cost_cap ? `Stopped at the cost cap with ${fmtInt(c2.jobs_not_run)} jobs not run; re-ingest to resume them. ` : ""}`
+    + (c2.global_skipped_by_cap ? `The global pass reached the cap with ${fmtInt(c2.global_skipped_by_cap)} calls not made. ` : "")
     + `<div class="card-actions"><a class="btn primary" href="report.html?graph=${encodeURIComponent(state.graph)}">View report</a>`
     + `<a class="btn" href="chat.html?graph=${encodeURIComponent(state.graph)}">Open chat</a></div>`;
 }

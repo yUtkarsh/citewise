@@ -401,7 +401,8 @@ def _pipeline_stage(job: Job, meta: Confirm) -> None:
                                 "equations": len(result.equations), "figures": len(result.figures),
                                 "symbol_warnings": len(result.flagged), "coverage": round(result.coverage, 4)})
             pass1_seconds = round(time.time() - start, 1)
-            _run_pass2(job, doc, profile, graph, REPORT_DIR)
+            pass2_cost, progress = _run_pass2(job, doc, profile, graph, REPORT_DIR)
+        _after_pass2(job, graph, pass2_cost, progress, REPORT_DIR)
         (REPORT_DIR / f"{job.pdf_hash[:12]}_upload.json").write_text(json.dumps({
             "graph": job.graph, "file": job.pdf.name, "profile_seconds": job.profile_seconds,
             "pass1_seconds": pass1_seconds, "max_cost": upload_max_cost(),
@@ -477,9 +478,41 @@ def _run_pass2(job: Job, doc, profile, graph, report_dir: Path) -> None:
     (report_dir / f"{job.pdf_hash[:12]}_pass2.json").write_text(
         json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
     total = report.get("costs", {}).get("total_cost_usd", 0.0)
-    job.emit("counts", {"pass": 2, **progress, "cost_usd": total, "max_cost": max_cost,
-                        "stopped_at_cost_cap": report.get("stopped_at_cost_cap"),
-                        "jobs_not_run": report.get("jobs_not_run")})
+    final = {**progress, "stopped_at_cost_cap": report.get("stopped_at_cost_cap"),
+             "jobs_not_run": report.get("jobs_not_run")}
+    job.emit("counts", {"pass": 2, **final, "cost_usd": total, "max_cost": max_cost})
+    return total, final
+
+
+def _after_pass2(job: Job, graph, pass2_cost: float, progress: dict, report_dir: Path,
+                 transport=None, encoder=None, cache_dir: Path | None = None) -> float:
+    """The search indexes (local embeddings, no API calls), then the global pass under what
+    Pass 2 left of the upload's cost cap: its dry-run estimate is logged first, and its
+    spend is added to the upload's cost. Returns the global pass's cost."""
+    from app.graph.search_index import build_search_index, default_encoder
+    from app.ingest.global_pass.run import GlobalOptions, run_global
+
+    max_cost = upload_max_cost()
+    job.set_stage("indexes", "Search indexes: full-text and local embeddings (no API calls)")
+    encoder = encoder or default_encoder()
+    build_search_index(graph, encoder, log=job.log)
+    left = round(max(0.0, max_cost - pass2_cost), 4)
+    job.set_stage("global", "Global pass: the AI links commentary, tables and duplicate parameters, then checks "
+                            f"in Cypher (${left:.2f} of the cap left)")
+    run = lambda options: asyncio.run(run_global(graph, options, transport, encoder, cache_dir,  # noqa: E731
+                                                 log=job.log))
+    estimate = run(GlobalOptions(dry_run=True, max_cost=left))
+    job.log(f"global pass: estimated ${estimate.get('estimated_usd', 0.0):.2f} for uncached calls, "
+            f"${left:.2f} of the cap left")
+    report = run(GlobalOptions(max_cost=left))
+    report["estimated_usd"] = estimate.get("estimated_usd")
+    report_dir.mkdir(parents=True, exist_ok=True)
+    (report_dir / f"{job.pdf_hash[:12]}_global.json").write_text(
+        json.dumps(report, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
+    cost = report["calls"]["cost_usd"]
+    job.emit("counts", {"pass": 2, **progress, "cost_usd": round(pass2_cost + cost, 4), "global_cost_usd": cost,
+                        "global_skipped_by_cap": report["calls"]["skipped_by_cap"], "max_cost": max_cost})
+    return cost
 
 
 class _CostMeter:

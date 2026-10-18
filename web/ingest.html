@@ -50,7 +50,7 @@
         <p class="hint" id="reingest-note" hidden>This code is already in the library. Confirming deletes its graph and builds it again from this PDF (cached AI answers are reused).</p>
         <div class="confirm-row">
           <button class="btn primary" type="submit" id="confirm-btn">Confirm and start Pass 1 and Pass 2</button>
-          <span class="hint">Pass 1 makes no API calls. Pass 2 calls the AI and stops at the cost cap of <strong id="cap"></strong>.</span>
+          <span class="hint">Pass 1 and the search indexes make no API calls. Pass 2 and the global pass call the AI and stop together at the cost cap of <strong id="cap"></strong>.</span>
         </div>
       </form>
 
@@ -80,6 +80,8 @@
         <li data-stage="profiling">Profile</li>
         <li data-stage="pass1">Pass 1 · skeleton</li>
         <li data-stage="pass2">Pass 2 · AI</li>
+        <li data-stage="indexes">Indexes</li>
+        <li data-stage="global">Global pass · AI</li>
         <li data-stage="done">Report</li>
       </ol>
       <div class="grid-progress">
