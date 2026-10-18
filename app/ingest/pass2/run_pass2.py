@@ -22,7 +22,7 @@ from app.ingest.pass2 import images as img
 from app.ingest.pass2.jobs import KINDS, Job, clause_job, is_trivial, page_job, second_read_job, table_jobs
 from app.ingest.pass2.notation import NotationDict, link_terms
 from app.ingest.pass2.records import ClauseRec, Skeleton2
-from app.ingest.pass2.runner import CostLog, JobState, Outcome, Runner, cost_of
+from app.ingest.pass2.runner import CostLog, JobState, Outcome, PinStore, Runner, cost_of
 from app.ingest.pass2.schemas import PASS2_SCHEMA_VERSION, NotationEntry, TermEntry
 from app.ingest.pass2 import validate as v
 from app.llm import CACHE_DIR, AsyncTransport, cache_key, cache_path
@@ -47,6 +47,8 @@ class Pass2Options:
     clause_ids: set[str] | None = None  # only these clauses
     use_cache: bool = True  # False: ask Claude again for the selected jobs and replace their cached answers
     save_images_dir: Path | None = None  # write the images each call sends (with dry_run: render only)
+    hint: str | None = None  # reviewer note added to the selected clause jobs (strict replacement)
+    pins: bool = True  # keep stored answers unless flagged and beaten by a passing one
 
 
 class Sink(Protocol):
@@ -241,7 +243,8 @@ async def run_pass2(doc: pymupdf.Document, pdf_hash: str, profile: Profile, skel
                     state=state, costs=costs, transport=transport, concurrency=opts.concurrency,
                     fallbacks_for=lambda model: settings.server_fallback and "haiku" not in model,
                     cache_dir=cache_dir, log=log, max_cost=opts.max_cost, estimate_cost=estimated_cost,
-                    save_images_dir=opts.save_images_dir)  # use_cache: set per phase below
+                    save_images_dir=opts.save_images_dir,  # use_cache: set per phase below
+                    pins=PinStore(state_path.with_name(state_path.stem + "_pins")) if opts.pins else None)
     # Claude Haiku 5.5 has no server-side fallback (Anthropic docs, Refusals and fallback).
 
     report: dict = {"crop_mode": opts.crop_mode, "schema": PASS2_SCHEMA_VERSION}
@@ -302,7 +305,10 @@ async def run_pass2(doc: pymupdf.Document, pdf_hash: str, profile: Profile, skel
                 skipped += 1
                 continue
             job = clause_job(c, skel, notation, pdf_hash, opts.crop_mode)
-            (trivial if is_trivial(c) else jobs).append(job)
+            if opts.hint:
+                job.text += "\n\nReviewer note (from a human checking an earlier answer): " + opts.hint
+                job.strict = True
+            (trivial if is_trivial(c) and not opts.hint else jobs).append(job)
     if "tables" in opts.jobs:
         for t in select_tables(skel, opts):
             for job in table_jobs(t, skel, notation):

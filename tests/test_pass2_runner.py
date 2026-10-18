@@ -276,3 +276,55 @@ def test_saved_images_are_the_bytes_sent(tmp_path, fema_profile):
     [saved] = list((tmp_path / "debug").rglob("*.png"))
     sent = next(b for b in blocks if b["type"] == "image")["source"]["data"]
     assert base64.standard_b64decode(sent) == saved.read_bytes()
+
+
+# ---- pinned answers -------------------------------------------------------------------------
+
+def pinned_runner(tmp_path, send, **kw):
+    return make_runner(tmp_path, send, pins=rn.PinStore(tmp_path / "pins"), **kw)
+
+
+def test_a_passing_stored_answer_is_never_asked_again(tmp_path):
+    send, calls = fake('{"value": 2}', '{"value": 9}')
+    r, _ = pinned_runner(tmp_path, send)
+    run(r, [job()])
+    r2, _ = pinned_runner(tmp_path, send, use_cache=False)  # even with the cache bypassed
+    [o] = run(r2, [job()])
+    assert len(calls) == 1 and o.output.value == 2
+
+
+def test_a_flagged_stored_answer_is_replaced_only_by_a_passing_one(tmp_path):
+    send, calls = fake('{"value": 0}')  # flagged twice: stored flagged
+    r, _ = pinned_runner(tmp_path, send)
+    [first] = run(r, [job()])
+    assert first.status == "flagged"
+    still_bad, calls2 = fake('{"value": -1}')
+    r2, _ = pinned_runner(tmp_path, still_bad, use_cache=False)
+    [o] = run(r2, [job()])
+    assert o.status == "flagged" and o.output.value == 0 and len(calls2) == 2  # kept the stored one; cost counted
+    assert r2.costs.summary()["by_job_type"]["clause"]["api_calls"] == 2
+    good, _ = fake('{"value": 5}')
+    r3, _ = pinned_runner(tmp_path, good, use_cache=False)
+    [o3] = run(r3, [job()])
+    assert o3.status == "extracted" and o3.output.value == 5
+    assert rn.PinStore(tmp_path / "pins").get("clause:0")["status"] == "extracted"
+
+
+def test_an_approved_answer_is_never_re_extracted(tmp_path):
+    send, _ = fake('{"value": 0}')
+    r, _ = pinned_runner(tmp_path, send)
+    run(r, [job()])
+    rn.PinStore(tmp_path / "pins").approve("clause:0")
+    good, calls = fake('{"value": 5}')
+    r2, _ = pinned_runner(tmp_path, good, use_cache=False)
+    [o] = run(r2, [job()])
+    assert not calls and o.output.value == 0
+
+
+def test_a_hinted_answer_must_verify_every_equation():
+    j = job()
+    j.strict = True
+    note = rn.Outcome(j, "extracted", Answer(value=1), [Issue("equation_latex", "could not verify", retry=False)], None)
+    assert not rn.passes(j, note)
+    j.strict = False
+    assert rn.passes(j, note)

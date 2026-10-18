@@ -73,7 +73,11 @@ def run_pass2_cli(doc, pdf_hash: str, profile: Profile, name: str, args, log) ->
                         max_cost=args.max_cost,
                         clause_ids={c.strip() for c in args.clauses.split("|")} if args.clauses else None,
                         use_cache=not args.no_cache,
-                        save_images_dir=DEBUG_DIR if args.save_sent_images else None)
+                        save_images_dir=DEBUG_DIR if args.save_sent_images else None,
+                        hint=args.hint)
+    if args.hint and not args.clauses:
+        print("--hint needs --clauses: a hint is for specific clauses")
+        return 2
     sink = None if args.dry_run else GraphSink(graph)
     report = asyncio.run(run_pass2(doc, pdf_hash, profile, skel, sink, opts,
                                    JOBS_DIR / f"{pdf_hash[:12]}_pass2.jsonl", log=log))
@@ -186,6 +190,8 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--max-cost", type=float, help="Pass 2: stop starting calls once estimated spend reaches this (USD)")
     parser.add_argument("--clauses", help="Pass 2: only these clause ids, separated by '|' (ids may contain commas)")
     parser.add_argument("--no-cache", action="store_true", help="Pass 2: ask again for the selected jobs, replacing cached answers")
+    parser.add_argument("--hint", help="Pass 2: a reviewer note added to the selected clauses (use with --clauses); "
+                                       "the stored answer is replaced only if the new one passes every check")
     parser.add_argument("--save-sent-images", action="store_true",
                         help="Pass 2: write the images each call sends to data/debug/ (with --dry-run: render only)")
     args = parser.parse_args(argv)

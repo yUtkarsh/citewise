@@ -237,6 +237,6 @@ def test_re_extraction_removes_stale_children(fixture_doc, graph):
 def test_no_cache_never_asks_the_notation_pages_again(fixture_doc, tmp_path):
     doc, profile, result = fixture_doc
     run(doc, profile, result, tmp_path, "always")
-    _, _, seen = run(doc, profile, result, tmp_path, "always", use_cache=False, redo=True)
+    _, _, seen = run(doc, profile, result, tmp_path, "always", use_cache=False, redo=True, pins=False)
     assert not [s for s in seen if s.output in (NotationPage, DefinitionsPage)]
     assert [s for s in seen if s.output is ClauseExtraction]

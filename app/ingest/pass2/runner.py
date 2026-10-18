@@ -21,8 +21,8 @@ from app.config import ROOT
 from app.ingest.pass2.jobs import Job
 from app.ingest.pass2.schemas import PASS2_SCHEMA_VERSION
 from app.ingest.pass2.validate import Issue
-from app.llm import (CACHE_DIR, AsyncTransport, CallResult, CallSpec, Reply, anthropic_async_transport,
-                     call_validated, is_cached)
+from app.llm import (CACHE_DIR, AsyncTransport, CallResult, CallSpec, Reply, _parse_and_check,
+                     anthropic_async_transport, call_validated, is_cached)
 from app.prompts import Prompt, load
 
 PRICING = json.loads((ROOT / "app" / "pricing.json").read_text(encoding="utf-8"))
@@ -116,6 +116,45 @@ class JobState:
         with self.path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
         self.done[entry["job"]] = entry
+
+
+# ---- pinned answers -------------------------------------------------------------------------
+
+class PinStore:
+    """The stored answer of each job, one JSON file per job. A stored answer that passes
+    its checks, or that a reviewer approved, is kept: the job is not asked again. A new
+    answer replaces a stored one only if the stored one is flagged and the new one passes.
+    (The cache is keyed by the inputs; pins are keyed by the job, so a change elsewhere,
+    such as a new notation slice, never silently replaces a good answer.)"""
+
+    def __init__(self, folder: Path):
+        self.folder = folder
+
+    def _path(self, job_id: str) -> Path:
+        return self.folder / (re.sub(r"[^A-Za-z0-9._-]+", "_", job_id) + ".json")
+
+    def get(self, job_id: str) -> dict | None:
+        path = self._path(job_id)
+        return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
+
+    def put(self, job_id: str, record: dict) -> None:
+        self.folder.mkdir(parents=True, exist_ok=True)
+        self._path(job_id).write_text(json.dumps(record, ensure_ascii=False, indent=1), encoding="utf-8")
+
+    def approve(self, job_id: str, approved: bool = True) -> None:
+        """For the review queue: an approved answer is never re-extracted."""
+        record = self.get(job_id)
+        if record is None:
+            raise KeyError(job_id)
+        self.put(job_id, {**record, "approved": approved})
+
+
+def passes(job: Job, outcome: Outcome) -> bool:
+    """Good enough to replace a stored answer: extracted, and for a strict job (one run
+    with a reviewer hint) every equation verified by the LaTeX check."""
+    if outcome.status != "extracted" or outcome.output is None:
+        return False
+    return not (job.strict and any(i.code == "equation_latex" for i in outcome.issues))
 
 
 # ---- cost log ------------------------------------------------------------------------------
@@ -236,6 +275,20 @@ class Runner:
     not_run: list[str] = field(default_factory=list)
     use_cache: bool = True
     save_images_dir: Path | None = None  # write the images of every call sent (debugging)
+    pins: PinStore | None = None  # stored answers, kept unless flagged and beaten by a passing one
+
+    def pinned_outcome(self, job: Job, pin: dict) -> Outcome:
+        output, issues, error = _parse_and_check(pin.get("raw") or "", job.output, self.checks(job))
+        call = CallResult(output, pin.get("raw"), issues, pin.get("attempts", 1), [], from_cache=True,
+                          refused=pin.get("refused", False), parse_error=error)
+        return outcome_of(job, call)
+
+    def pin(self, job: Job, outcome: Outcome) -> None:
+        call = outcome.call
+        self.pins.put(job.id, {"job": job.id, "raw": call.raw if call else None, "status": outcome.status,
+                               "attempts": call.attempts if call else 0, "refused": bool(call and call.refused),
+                               "prompt": f"{job.prompt}:{self.prompt(job.prompt).version}", "approved": False,
+                               "issues": [i.as_dict() for i in outcome.issues][:20], "time": round(time.time(), 1)})
 
     def spent(self) -> float:
         return sum(v.get("cost_usd", 0.0) for v in self.costs.kinds.values())
@@ -268,6 +321,12 @@ class Runner:
         outcomes: list[Outcome] = []
 
         async def one(job: Job) -> None:
+            stored = self.pins.get(job.id) if self.pins is not None else None
+            kept = self.pinned_outcome(job, stored) if stored is not None else None
+            if kept is not None and (stored.get("approved") or kept.status == "extracted"):
+                await self.finish(kept, write_lock)  # a passing or approved answer is never asked again
+                outcomes.append(kept)
+                return
             async with semaphore:
                 model = self.model_for(job)
                 reserved = self.admit(job, model)
@@ -288,6 +347,13 @@ class Runner:
                     self.reserved -= reserved
                     return
             outcome = outcome_of(job, call)
+            if self.pins is not None and outcome.call is not None:
+                if kept is None or passes(job, outcome):
+                    self.pin(job, outcome)
+                else:  # the stored answer is flagged and so is the new one: keep the stored one
+                    self.log(f"{job.id}: the new answer does not pass "
+                             f"({', '.join(sorted({i.code for i in outcome.issues})) or 'no output'}); kept the stored one")
+                    outcome = Outcome(job, kept.status, kept.output, kept.issues, call)  # the call's cost still counts
             await self.finish(outcome, write_lock)
             self.reserved -= reserved  # released only once its real cost is in the log
             outcomes.append(outcome)

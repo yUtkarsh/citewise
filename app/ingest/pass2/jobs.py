@@ -34,6 +34,7 @@ class Job:
     table: TableRec | None = None
     rows: list[RowRec] | None = None  # the rows this job covers (a table part)
     cells: list[tuple[int, int, float, str]] | None = None  # second read: (row, col, first number, first value)
+    strict: bool = False  # run with a reviewer hint: replace the stored answer only if every equation verifies
     page: int = 0
     page_text: str = ""
 
