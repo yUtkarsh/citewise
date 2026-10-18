@@ -48,5 +48,11 @@
     "USES": 752,
     "USES_TERM": 1448,
     "WHERE": 333
+  },
+  "crops": {
+    "zip": "code_fema356_crops.zip",
+    "files": 443,
+    "bytes": 23354194,
+    "sha256": "70cdd1fa2d023a5dd644e7647a72c1d08faf70a787d0e98c784eb73cf4fe3771"
   }
 }

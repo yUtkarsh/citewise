@@ -1,5 +1,7 @@
 """Load an exported code graph (``scripts.export_graph``) into FalkorDB and check it
-against its manifest: checksum before loading, node and edge counts after.
+against its manifest: checksum before loading, node and edge counts after. Then unpack
+the graph's crop images (``<graph>_crops.zip``, checksum checked) into ``data/crops/``,
+keeping files that are already there.
 
     python -m scripts.load_graph [export/code_fema356.manifest.json] [--replace]
 
@@ -13,9 +15,32 @@ import gzip
 import hashlib
 import json
 from pathlib import Path
+import zipfile
 
 from app.graph.connection import get_db
-from scripts.export_graph import counts, module_version
+from scripts.export_graph import CROPS_ROOT, counts, module_version
+
+
+def unpack_crops(zip_path: Path, sha256: str, dest: Path) -> tuple[int, int]:
+    """Extract the crop zip into ``dest`` after checking its checksum; every path must stay
+    inside ``dest``. Existing files are kept. Returns (written, kept)."""
+    if hashlib.sha256(zip_path.read_bytes()).hexdigest() != sha256:
+        raise SystemExit(f"{zip_path.name}: checksum does not match the manifest")
+    root, written, kept = dest.resolve(), 0, 0
+    with zipfile.ZipFile(zip_path) as z:
+        for name in z.namelist():
+            target = (root / name).resolve()
+            if not target.is_relative_to(root):
+                raise SystemExit(f"{zip_path.name}: {name!r} would land outside {dest}")
+            if name.endswith("/"):
+                continue
+            if target.exists():
+                kept += 1
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(z.read(name))
+            written += 1
+    return written, kept
 
 
 def main() -> None:
@@ -44,6 +69,9 @@ def main() -> None:
         raise SystemExit(f"loaded {key} but counts differ: {got['nodes']} nodes, {got['edges']} edges "
                          f"(expected {manifest['nodes']}, {manifest['edges']})")
     print(f"loaded {key}: {got['nodes']} nodes, {got['edges']} edges, matching the manifest")
+    if crops := manifest.get("crops"):
+        written, kept = unpack_crops(path.parent / crops["zip"], crops["sha256"], CROPS_ROOT)
+        print(f"crops: {written} written to {CROPS_ROOT}, {kept} already there")
 
 
 if __name__ == "__main__":
