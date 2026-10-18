@@ -24,7 +24,7 @@ SEVERITY = {
     "undefined_symbol": "high", "blank_cell": "high", "grid_dimension": "high", "invalid_output": "high",
     "uncertain_symbol_correction": "medium", "symbol_correction": "medium", "equation_structure": "medium",
     "source_quote": "low", "unmapped": "low", "reference_unknown": "low", "footnote_unknown": "low",
-    "bad_id": "low", "refused": "high", "equation_mismatch": "high", "equation_latex": "medium",
+    "bad_id": "low", "refused": "high", "equation_mismatch": "high", "equation_latex": "low",  # equation_latex: the checker could not verify
     "image_read": "low", "image_read_disagrees": "high", "equation_missing": "medium",
 }
 GRID_METHODS = {"docling", "find_tables"}  # grids whose cells are trusted for exact matching
@@ -356,6 +356,17 @@ def _rename(expr, key_to_id: dict[str, str], keep: set[str]):
 
 
 def check_equation_latex(eq, symbols: dict[str, str], seed: str) -> Issue | None:
+    """The LaTeX-vs-SymPy check. Disagreement ('equation_mismatch': values or left side
+    differ) is retried, then flagged high. When the checker cannot verify the equation
+    (LaTeX it cannot parse, symbols it cannot map, no point it can evaluate) the result is
+    a low-severity note without retry: a limit of the checker, not an error in the answer."""
+    issue = _check_equation_latex(eq, symbols, seed)
+    if issue is not None and issue.code == "equation_latex":
+        issue.retry = False
+    return issue
+
+
+def _check_equation_latex(eq, symbols: dict[str, str], seed: str) -> Issue | None:
     """Parse the LaTeX, map its symbols to parameter ids, and compare it with the SymPy
     form at 3 positive points (sum limits as small integers). ``symbols``: id -> LaTeX
     for the clause's parameters and the notation entries. Where the parser reads the

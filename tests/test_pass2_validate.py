@@ -346,7 +346,8 @@ def test_equation_3_13_current_answer_fails_the_latex_check():
     current = eq_out(r"F_{px} = \sum_{i=x}^{n} F_i \frac{w_x}{\sum_{i=x} w_i}",
                      "F_px = Sum(F_i_lateral * w_x / w_i, (i, x, n))")
     issue = v.check_equation_latex(current, EQ_3_13_SYMBOLS, "t")
-    assert issue is not None and issue.retry
+    # its LaTeX does not parse: the checker cannot verify it, a low note without retry
+    assert issue.code == "equation_latex" and issue.severity == "low" and not issue.retry
     # with well-formed LaTeX for the code's formula, the sum of ratios disagrees numerically
     against_code = eq_out(r"F_{px} = \frac{\sum_{i=x}^{n} F_i}{\sum_{i=x}^{n} w_i} w_x", current.sympy)
     issue = v.check_equation_latex(against_code, EQ_3_13_SYMBOLS, "t")
@@ -373,7 +374,7 @@ def test_latex_check_handles_primes_greek_digits_in_subscripts_and_d():
 def test_latex_symbols_without_a_parameter_are_reported():
     e = EquationOut(equation_id=None, latex=r"V = C_t Q", sympy="V = C_t*Q", computes="V", uses=[], source_quote="")
     issue = v.check_equation_latex(e, {"V": "V", "C_t": "C_t"}, "t")
-    assert issue.code == "equation_latex" and "Q" in issue.detail
+    assert issue.code == "equation_latex" and "Q" in issue.detail and not issue.retry
 
 
 # ---- where-block corrections and primes ---------------------------------------------------------
