@@ -62,8 +62,13 @@ def split(text: str) -> tuple[str, str, str] | None:
     return lhs, OPS.get(op, op), rhs
 
 
+SUBSCRIPTED = re.compile(r"[A-Za-z]_|[A-Za-z]\d")  # T_0, S_X1, T0: a name, never a number
+
+
 def number_of(side: str) -> float | None:
     """The side's value when it is just a number (unit words allowed: '0.5 in.')."""
+    if SUBSCRIPTED.search(side):
+        return None
     found = numbers(side)
     letters = re.sub(r"[^A-Za-z]", "", side)
     return found[0] if len(found) == 1 and len(letters) <= 3 and not re.search(r"[*/^]", side) else None
@@ -72,13 +77,13 @@ def number_of(side: str) -> float | None:
 def resolve(side: str, facts: dict[str, Fact]) -> tuple[float | None, str]:
     if not side:
         return None, "empty"
+    key = norm(side)
+    for fact in facts.values():  # a parameter id (or saved label) first, so 'T_0' is never read as 0
+        if fact.number() is not None and key in {norm(fact.id), norm(fact.label or "")}:
+            return fact.number(), f"fact {fact.id}"
     value = number_of(side)
     if value is not None:
         return value, "number"
-    key = norm(side)
-    for fact in facts.values():
-        if fact.number() is not None and key in {norm(fact.id), norm(fact.label or "")}:
-            return fact.number(), f"fact {fact.id}"
     try:
         expr = parse_formula(side)
     except ValueError:

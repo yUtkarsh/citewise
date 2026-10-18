@@ -5,7 +5,7 @@ import pytest
 
 from app.agent import graph_tools as gt
 from app.agent.compute import ORDER, Header, compute_equation, compute_table, map_columns
-from app.agent.conditions import FALSE, TRUE, UNKNOWN, evaluate
+from app.agent.conditions import FALSE, TRUE, UNKNOWN, evaluate, number_of
 from app.agent.facts import Fact, MemoryFacts
 from app.agent.search import find_entry, ft_query
 from app.agent.tools import Toolbox
@@ -35,6 +35,17 @@ def test_conditions_decide_comparisons_and_leave_descriptions_unknown():
     assert evaluate("V/(b d) ≤ 3", facts).status == TRUE  # matched by the fact's label
     assert evaluate("Type A", facts).status == UNKNOWN
     assert evaluate("Q ≤ 3", facts).status == UNKNOWN  # no fact for Q
+
+
+def test_subscripted_ids_are_names_not_numbers():
+    assert number_of("T_0") is None and number_of("S_X1") is None and number_of("T0") is None
+    assert number_of("0.5 in.") == 0.5
+    # unknown subscripted ids leave the comparison undecided instead of comparing against 0 or 1
+    assert evaluate("T < T_0", {"T": Fact("T", 0.45)}).status == UNKNOWN
+    assert evaluate("S_X1 ≥ 0.2", {}).status == UNKNOWN
+    facts = {"T": Fact("T", 0.45), "T_0": Fact("T_0", 0.12), "S_X1": Fact("S_X1", 0.475)}
+    assert evaluate("T < T_0", facts).status == FALSE  # matched by parameter id: 0.45 < 0.12
+    assert evaluate("S_X1 ≥ 0.2", facts).status == TRUE
 
 
 def test_columns_map_by_column_with_shared_columns_and_fall_back_to_order():
