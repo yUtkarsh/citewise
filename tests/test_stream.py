@@ -7,7 +7,7 @@ import pytest
 from app.agent import stream
 from app.graph import connection
 from tests.agent_graph import GRAPH, code_graph  # noqa: F401  (fixture)
-from tests.test_agent_loop import Script, text, tool
+from tests.test_agent_loop import DEFAULT_BUDGET, THINKING_ONLY, Script, text, tool
 from tests.test_memory import calc_turn, whatif_turn
 
 MEMORY = "memory_stream_test"
@@ -94,3 +94,12 @@ def test_a_failure_becomes_an_error_event(hook):
         raise RuntimeError("model unavailable")
     events = hook(broken, "anything", session="s-error")
     assert names(events) == ["error"] and "model unavailable" in events[0]["data"]["message"]
+
+
+def test_the_budget_ends_with_a_streamed_answer_or_a_visible_error(hook):
+    lookups = [[tool("find_entry", i, query="x")] for i in range(DEFAULT_BUDGET)]
+    events = hook(Script(*lookups, THINKING_ONLY, [text("The answer, from the tool results.")]), "explain",
+                  session="s-budget")
+    assert names(events)[-1] == "answer_done" and answer(events) == "The answer, from the tool results."
+    events = hook(Script(*lookups, THINKING_ONLY, RuntimeError("overloaded")), "explain", session="s-budget-2")
+    assert names(events)[-1] == "answer_done" and answer(events).startswith("(No answer: the final answer call failed")

@@ -4,7 +4,8 @@ from __future__ import annotations
 import pytest
 
 from app.agent.facts import MemoryFacts
-from app.agent.loop import DEFAULT_BUDGET, PROCEDURE_BUDGET, Agent, AgentReply
+from app.agent.loop import FINAL_NOTE, WRAP_UP_NOTE, Agent, AgentReply
+from app.config import get_settings
 from app.agent.results import ToolResult
 from app.agent.tools import Toolbox
 from tests.agent_graph import code_graph  # noqa: F401  (fixture)
@@ -20,8 +21,13 @@ def text(t: str) -> dict:
     return {"type": "text", "text": t}
 
 
+DEFAULT_BUDGET = get_settings().agent_max_tool_calls_simple
+PROCEDURE_BUDGET = get_settings().agent_max_tool_calls
+THINKING_ONLY = [{"type": "thinking", "thinking": "", "signature": "sig-x"}]
+
+
 class Script:
-    """Replies in order; records every request."""
+    """Replies in order (an exception in the list is raised); records every request."""
 
     def __init__(self, *replies: list[dict]):
         self.replies = list(replies)
@@ -30,6 +36,8 @@ class Script:
     def __call__(self, kwargs: dict) -> AgentReply:
         self.requests.append(kwargs)
         content = self.replies.pop(0) if self.replies else [text("done")]
+        if isinstance(content, Exception):
+            raise content
         stop = "tool_use" if any(b["type"] == "tool_use" for b in content) else "end_turn"
         return AgentReply(content, stop, dict(USAGE), "claude-sonnet-5-5")
 
@@ -114,3 +122,34 @@ def test_with_trace_only_the_answer_paths_labels_are_required(code_graph):
                     [text("1.2 Base Shear, p. 10.")])
     turn = agent(code_graph, script).ask("What is 1.2?")
     assert "Labels (added by the checker)" not in turn.answer  # 1.3 is flagged but not on the path
+
+
+def test_three_calls_before_the_budget_the_model_is_told_to_wrap_up(code_graph):
+    script = Script(*[[tool("find_entry", i, query="x")] for i in range(DEFAULT_BUDGET)], [text("answer")])
+    agent(code_graph, script).ask("many lookups")
+    notes = [b["text"] for m in script.requests[-1]["messages"] if isinstance(m["content"], list)
+             for b in m["content"] if b.get("type") == "text"]  # each request repeats the turn so far
+    wrap = WRAP_UP_NOTE.format(left=3)
+    assert notes.count(wrap) == 1
+    first = next(i for i, r in enumerate(script.requests) if any(
+        wrap in str(m["content"]) for m in r["messages"]))
+    assert first == DEFAULT_BUDGET - 3  # the request after call budget-3 carries it
+
+
+def test_a_reply_without_text_at_the_budget_gets_a_final_tool_free_answer(code_graph):
+    script = Script(*[[tool("find_entry", i, query="x")] for i in range(DEFAULT_BUDGET)], THINKING_ONLY,
+                    [text("Here is the procedure, from what the tools found.")])
+    turn = agent(code_graph, script).ask("explain everything")
+    assert turn.answer.startswith("Here is the procedure")
+    final = script.requests[-1]
+    assert final["tool_choice"] == {"type": "none"} and FINAL_NOTE in str(final["messages"][-1]["content"])
+    assert final["messages"][-1]["role"] == "user" and final["messages"][-2]["role"] == "assistant"
+
+
+def test_a_failed_final_call_gives_a_visible_error_never_an_empty_answer(code_graph):
+    script = Script(*[[tool("find_entry", i, query="x")] for i in range(DEFAULT_BUDGET)], THINKING_ONLY,
+                    RuntimeError("overloaded"))
+    turn = agent(code_graph, script).ask("explain everything")
+    assert turn.answer.startswith("(No answer: the final answer call failed (RuntimeError: overloaded)")
+    script = Script(THINKING_ONLY, THINKING_ONLY)
+    assert "returned no text" in agent(code_graph, script).ask("hello").answer

@@ -3,7 +3,11 @@
 Per question: the cached system prompt (answer rules) and tool definitions, then the
 current project facts (frozen for the question, so the prefix never changes inside a
 turn), then the history. Claude calls tools until it answers; at most
-``DEFAULT_BUDGET`` calls, or ``PROCEDURE_BUDGET`` once it calls ``plan_procedure``.
+AGENT_MAX_TOOL_CALLS_SIMPLE calls (default 10), or AGENT_MAX_TOOL_CALLS (default 30) once
+it calls ``plan_procedure``. With WRAP_UP_AT calls left the tool result tells it to start
+wrapping up; when the budget is used up, the next call has no tools. A turn never ends
+with an empty answer: a reply without text gets one more call without tools, and if that
+fails too the answer is a visible error saying why.
 Past turns are stored as text only: the question, a one-line summary of each tool
 call and the answer. No thinking block is ever replayed across questions, so
 trimming history never edits a turn whose reasoning is sent back.
@@ -23,7 +27,11 @@ from app.config import get_settings, require_model
 from app.ingest.pass2.runner import cost_of
 from app.prompts import load
 
-DEFAULT_BUDGET, PROCEDURE_BUDGET = 10, 20
+DEFAULT_BUDGET, PROCEDURE_BUDGET = 10, 30  # defaults of AGENT_MAX_TOOL_CALLS_SIMPLE / AGENT_MAX_TOOL_CALLS
+WRAP_UP_AT = 3
+WRAP_UP_NOTE = "{left} tool calls left for this question: start wrapping up. Use them only for what the answer " \
+               "cannot do without (a missing value, trace), then write the answer."
+FINAL_NOTE = "Write your answer to the question now, in full, from the tool results above. Tools are not available."
 MAX_TOKENS = 16000
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
 BUDGET_NOTE = "Tool budget for this question is used up. Answer now with what the tool results show, and say " \
@@ -199,7 +207,9 @@ class Agent:
         facts_text = facts_block(self.toolbox.store)
         messages = list(self.history)
         messages.append({"role": "user", "content": question})
-        budget, used, final = DEFAULT_BUDGET, 0, final_first
+        settings = get_settings()
+        simple, procedure = settings.agent_max_tool_calls_simple, settings.agent_max_tool_calls
+        budget, used, final, warned = simple, 0, final_first, False
         reply = None
         while True:
             if self.max_cost is not None and self.spent + self._estimate(turn) > self.max_cost:
@@ -225,8 +235,8 @@ class Agent:
                     final = True
                 else:
                     used += 1
-                    if name == PROCEDURE_TOOL:
-                        budget = PROCEDURE_BUDGET
+                    if name == PROCEDURE_TOOL and budget != procedure:
+                        budget, warned = procedure, False
                     if self.on_tool_start:
                         self.on_tool_start(block["id"], name, args)
                     result = self.toolbox.run(name, args)
@@ -239,11 +249,17 @@ class Agent:
             if used >= budget:
                 final = True
                 results.append({"type": "text", "text": BUDGET_NOTE})
+            elif budget - used <= WRAP_UP_AT and not warned:
+                warned = True
+                results.append({"type": "text", "text": WRAP_UP_NOTE.format(left=budget - used)})
             messages.append({"role": "user", "content": results})
 
-        text = "\n".join(b.get("text", "") for b in (reply.content if reply else []) if b.get("type") == "text").strip()
-        if turn.stopped and not text:
-            text = f"(No answer: {turn.stopped}.)"
+        text = _text(reply)
+        if not text and reply is not None and turn.stopped in (None, "max_tokens"):
+            text = self.final_answer(messages, facts_text, turn)
+        if not text:
+            text = (f"(No answer: {turn.stopped or 'the model returned no text'}. The tools used are listed in "
+                    f"the trace; ask again, or raise AGENT_MAX_TOOL_CALLS for longer questions.)")
         calls = [(c.name, c.args, c.result) for c in turn.calls]
         replayed = self._replayed
         if replayed is not None:  # a what-if: the change line leads; the re-run path is this turn's path
@@ -268,6 +284,32 @@ class Agent:
         self.remember(turn)
         return turn
 
+    def final_answer(self, messages: list[dict], facts_text: str, turn: Turn) -> str:
+        """One more call without tools when a turn ended with no answer text (a reply of
+        only thinking, or nothing). Returns its text, or '' with ``turn.stopped`` set."""
+        if messages and messages[-1]["role"] == "assistant" and not _has_output(messages[-1]["content"]):
+            messages.pop()  # an empty assistant turn cannot be sent back
+        if messages[-1]["role"] == "assistant":
+            messages.append({"role": "user", "content": FINAL_NOTE})
+        else:
+            last = messages[-1]["content"]
+            blocks = last if isinstance(last, list) else [{"type": "text", "text": last}]
+            messages[-1] = {"role": "user", "content": blocks + [{"type": "text", "text": FINAL_NOTE}]}
+        try:
+            reply = self.transport(self.request(messages, facts_text, final=True))
+        except Exception as exc:  # the answer says so; a turn is never left empty
+            turn.stopped = f"the final answer call failed ({type(exc).__name__}: {str(exc)[:200]})"
+            return ""
+        usage = {"model": reply.model, **reply.usage}
+        turn.usages.append(usage)
+        cost = cost_of(usage) or 0.0
+        turn.cost += cost
+        self.spent += cost
+        text = _text(reply)
+        if not text:
+            turn.stopped = f"the final answer call returned no text (stop reason {reply.stop_reason})"
+        return text
+
     def remember(self, turn: Turn) -> None:
         """Store the turn as text: tool results become one-line summaries. With a memory
         graph, also the messages and the question's answer path."""
@@ -284,3 +326,12 @@ class Agent:
             tools = [{"tool": c.name, "args": c.args, "summary": c.result.summary, "error": c.result.error}
                      for c in turn.calls]
             self.memory.record_question(turn.base_question, turn.answer, calls, turn.path(), turn.warnings, tools)
+
+
+def _text(reply: AgentReply | None) -> str:
+    return "\n".join(b.get("text", "") for b in (reply.content if reply else []) if b.get("type") == "text").strip()
+
+
+def _has_output(content) -> bool:
+    return any(b.get("type") == "tool_use" or (b.get("type") == "text" and (b.get("text") or "").strip())
+               for b in content or [])

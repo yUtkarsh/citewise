@@ -234,6 +234,9 @@ def _run(chat: Chat, question: str, facts: list[dict] | None, rerun: bool, emit)
             turn = agent.answer_replay(agent.last_replay)
     if turn is None:
         turn = agent.ask(question)
+    if not turn.answer.strip():  # the loop never returns one; the page must never show a blank answer
+        emit("error", {"message": "the agent returned no answer text", "code": "empty_answer"})
+        return
     for piece in chunks(turn.answer):
         emit("answer_delta", {"text": piece})
     emit("facts", facts_event(agent))

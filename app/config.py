@@ -26,6 +26,8 @@ class Settings:
     server_fallback: bool  # send `fallbacks: "default"` on models that support it
     embed_model: str  # local sentence-transformers model for find_entry (runs offline)
     agent_effort: str  # output_config.effort for the chat agent
+    agent_max_tool_calls: int  # tool budget for a procedure question (AGENT_MAX_TOOL_CALLS)
+    agent_max_tool_calls_simple: int  # tool budget for any other question (AGENT_MAX_TOOL_CALLS_SIMPLE)
 
 
 @lru_cache
@@ -44,6 +46,8 @@ def get_settings() -> Settings:
         server_fallback=os.getenv("SERVER_FALLBACK", "1").strip() not in ("0", "false", "no", ""),
         embed_model=os.getenv("EMBED_MODEL", "BAAI/bge-small-en-v1.5"),
         agent_effort=os.getenv("AGENT_EFFORT", "medium").strip().lower(),
+        agent_max_tool_calls=int(os.getenv("AGENT_MAX_TOOL_CALLS", "30")),
+        agent_max_tool_calls_simple=int(os.getenv("AGENT_MAX_TOOL_CALLS_SIMPLE", "10")),
     )
 
 
