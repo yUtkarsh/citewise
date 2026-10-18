@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 import json
+import os
 import re
 from pathlib import Path
 import time
@@ -30,7 +31,11 @@ router = APIRouter()
 SEVERITY_RANK = {"high": 3, "medium": 2, "low": 1}
 HINT_PREFIX = "\n\nReviewer note (from a human checking an earlier answer): "  # as run_pass2 adds --hint
 MAX_REJECTIONS = 2  # SPEC Step 4: after two rejections an item is needs_manual
-REVIEW_MAX_COST = 1.0  # USD, one reject
+REVIEW_MAX_COST = 1.0  # USD, one reject (grid call included); REVIEW_MAX_COST in the environment overrides it
+
+
+def review_cap() -> float:
+    return float(os.getenv("REVIEW_MAX_COST", str(REVIEW_MAX_COST)))
 
 
 @dataclass
@@ -331,7 +336,7 @@ def _summary(output, job) -> dict | None:
 
 
 async def rerun_with_note(graph, name: str, label: str, nid: str, note: str, paths: Paths,
-                          transport=None, log=None) -> dict:
+                          transport=None, log=None, max_cost: float | None = None) -> dict:
     """Re-run one clause or table job on MODEL_REVIEW with the reviewer note. The new answer
     replaces the stored one (graph and pin) only if it passes; else the stored one stays."""
     from app.config import get_settings, require_model
@@ -345,6 +350,7 @@ async def rerun_with_note(graph, name: str, label: str, nid: str, note: str, pat
 
     lines: list[str] = []
     say = (lambda m: (lines.append(str(m)), log and log(m)))  # noqa: E731
+    say(f"cost cap ${review_cap() if max_cost is None else max_cost:.2f} for this re-run")
     pdf_hash = _document_hash(graph)
     doc = pymupdf.open(_pdf_for(name, pdf_hash))
     profile = load_profile(profile_path(pdf_hash))
@@ -359,7 +365,8 @@ async def rerun_with_note(graph, name: str, label: str, nid: str, note: str, pat
     runner = Runner(doc=doc, model_for=lambda job: model, checks=lambda job: checker_for(job, notation),
                     write=lambda outcome: None, state=JobState(paths.state(pdf_hash)), transport=transport,
                     concurrency=2, fallbacks_for=lambda m: settings.server_fallback and "haiku" not in m,
-                    cache_dir=cache_dir, log=say, max_cost=REVIEW_MAX_COST, estimate_cost=estimated_cost,
+                    cache_dir=cache_dir, log=say, max_cost=review_cap() if max_cost is None else max_cost,
+                    estimate_cost=estimated_cost,
                     use_cache=False, pins=None)
     pinned_notation = []
     for page in range_pages(profile, "notation"):
@@ -451,10 +458,12 @@ async def revise_grid(graph, name: str, nid: str, note: str, paths: Paths, trans
     call = await call_validated(spec, prompt, job.cache_text(), GRID_SCHEMA_VERSION,
                                 lambda out: check_grid(out, required), transport or anthropic_async_transport,
                                 paths.cache_dir or CACHE_DIR, use_cache=False)
+    from app.ingest.pass2.runner import cost_of
     usage = call.usages
     ok = call.output is not None and not any(i.retry for i in call.issues)
     result = {"ok": ok, "issues": [i.as_dict() for i in call.issues], "required_numbers": required,
-              "before": grid_view(table.rows), "after": None, "usages": usage, "attempts": call.attempts}
+              "before": grid_view(table.rows), "after": None, "usages": usage, "attempts": call.attempts,
+              "cost_usd": round(sum(cost_of(u) or 0.0 for u in usage), 4)}
     if ok:
         rows = store_grid(graph, table, call.output, required)
         result["after"] = grid_view(rows)
@@ -472,7 +481,8 @@ async def reject(graph, name: str, label: str, nid: str, note: str, paths: Paths
         if not grid["ok"]:  # the grid stays as it was; the table is not re-extracted on a bad grid
             return {"before": before, "after": before, "review_status": before.get("review_status"), "grid": grid,
                     "results": [], "replaced": False, "after_view": None, "log": ["the rebuilt grid failed its check"]}
-    run = await rerun_with_note(graph, name, label, nid, note.strip(), paths, transport)
+    left = review_cap() - (grid["cost_usd"] if grid else 0.0)  # the grid call counts against the reject's cap
+    run = await rerun_with_note(graph, name, label, nid, note.strip(), paths, transport, max_cost=max(0.0, left))
     rejections = (before.get("rejections") or 0) + 1
     status = "unreviewed" if run["replaced"] else ("needs_manual" if rejections >= MAX_REJECTIONS else "rejected")
     graph.query(f"MATCH (n:{label} {{id: $id}}) SET n.review_status = $s, n.review_rejections = $r, "
