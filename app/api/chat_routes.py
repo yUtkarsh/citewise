@@ -40,7 +40,7 @@ class Fact(BaseModel):
     latex: str | None = None
     value: int | float | str | None = None
     unit: str | None = None
-    source: Literal["user", "matched_row", "assumed"] = "user"
+    source: Literal["user", "matched_row", "assumed", "agent_selected"] = "user"
     note: str | None = None
     node: dict | None = None
 

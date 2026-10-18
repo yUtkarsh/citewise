@@ -71,6 +71,31 @@ TOOLS: list[dict] = [
          "save_as_facts": {"type": "boolean",
                            "description": "Table only: store the row's values as facts (source matched_row) "
                                           "to use them as equation inputs"}}, ["target"])},
+    {"name": "calculate",
+     "description": "Only when compute cannot map a table's values itself (for example a value in a column "
+                    "chosen by its header, or interpolation between columns): you cite every input and the "
+                    "tool checks each citation against the graph, refuses on any mismatch, and does the "
+                    "arithmetic. A cell input cites table, row, col, the value as printed and the header text "
+                    "that justifies the column; a fact input cites a session fact. interpolate: lower and upper "
+                    "are cells whose headers each hold the column's x; x is a cited input; permitted_by cites "
+                    "the footnote, note row or clause that permits interpolation. formula: a SymPy expression "
+                    "in the input names, with no numbers in it. State the cells you chose in the answer.",
+     "input_schema": _obj({
+         "operation": {"type": "string", "enum": ["interpolate", "formula"]},
+         "inputs": {"type": "array", "items": _obj({
+             "name": {"type": "string", "description": "An identifier for the input"},
+             "source": {"type": "string", "enum": ["cell", "fact"]},
+             "table": {"type": "string"}, "row": {"type": "string", "description": "Row id, e.g. 'Table 1-4#r6'"},
+             "col": {"type": "integer"}, "value": {"type": "string", "description": "The cell value as printed"},
+             "header": {"type": "string", "description": "The header text that justifies the column"},
+             "fact": {"type": "string", "description": "Session fact id"}}, ["name", "source"])},
+         "interpolate": _obj({"x": {"type": "string"}, "lower": {"type": "string"}, "upper": {"type": "string"}},
+                             ["x", "lower", "upper"]),
+         "permitted_by": _obj({"kind": {"type": "string", "enum": ["footnote", "note_row", "clause"]},
+                               "id": {"type": "string"}}, ["kind", "id"]),
+         "formula": {"type": "string"},
+         "result": {"type": "string", "description": "Name of the result, e.g. a parameter id"}},
+         ["operation", "inputs"])},
     {"name": "save_session_facts",
      "description": "Store values the user gave, accepted typical values (source 'assumed', only after the "
                     "user accepts them), or project choices (performance level, procedure). Changing an "
@@ -80,7 +105,9 @@ TOOLS: list[dict] = [
                                                  "a project choice"},
          "value": {"type": ["number", "string"]},
          "unit": {"type": ["string", "null"]},
-         "source": {"type": "string", "enum": list(SOURCES)},
+         "source": {"type": "string", "enum": list(SOURCES),
+                    "description": "matched_row only for a value compute mapped from a matched row; agent_selected "
+                                   "for a value you picked (from an unmapped row, or from calculate)"},
          "label": {"type": ["string", "null"],
                    "description": "How the code writes the quantity, when it is a condition's expression"}},
          ["id", "value", "source"])}}, ["facts"])},
@@ -113,6 +140,7 @@ class Toolbox:
     on_facts_changed: Callable[[list[tuple[Fact | None, Fact]]], ToolResult | None] | None = None
     procedure: Callable[..., ToolResult] | None = None
     calls: list[tuple[str, dict, ToolResult]] = field(default_factory=list)
+    mapped: set[tuple[str, float]] = field(default_factory=set)  # (parameter, value) compute mapped from a row
 
     def run(self, name: str, args: dict) -> ToolResult:
         try:
@@ -143,6 +171,9 @@ class Toolbox:
             return self.procedure(g, a["goal"], self.store.all(), self.encode)
         if name == "trace":
             return gt.trace(g, a.get("items") or [])
+        if name == "calculate":
+            from app.agent.calculate import calculate
+            return calculate(g, a, self.store.all())
         if name == "run_cypher":
             return gt.run_cypher(g, a["query"])
         return ToolResult(f"unknown tool {name!r}", {}, error=True)
@@ -150,13 +181,15 @@ class Toolbox:
     def compute(self, a: dict) -> ToolResult:
         target = a["target"]
         found = gt.find_node(self.graph, target)
-        if found and found[0] == "Table":
-            return compute_table(self.graph, target, self.store, a.get("row_id"), a.get("reason"),
-                                 a.get("columns"), bool(a.get("save_as_facts")))
-        if found and found[0] == "Row":
-            table_id = target.rsplit("#r", 1)[0]
-            return compute_table(self.graph, table_id, self.store, target, a.get("reason"), a.get("columns"),
-                                 bool(a.get("save_as_facts")))
+        if found and found[0] in ("Table", "Row"):
+            table_id = target if found[0] == "Table" else target.rsplit("#r", 1)[0]
+            row_id = a.get("row_id") if found[0] == "Table" else target
+            result = compute_table(self.graph, table_id, self.store, row_id, a.get("reason"), a.get("columns"),
+                                   bool(a.get("save_as_facts")))
+            for v in (result.data.get("values") or []) if isinstance(result.data, dict) else []:
+                if v.get("param") and v.get("number") is not None:
+                    self.mapped.add((v["param"], float(v["number"])))
+            return result
         return compute_equation(self.graph, target, self.store.all(), a.get("solve_for"))
 
     def parameter_id(self, given: str) -> tuple[str, bool]:
@@ -179,8 +212,17 @@ class Toolbox:
 
     def save_facts(self, items: list[dict]) -> ToolResult:
         changes, saved, labels = [], [], []
+        downgraded = []
         for item in items:
             fid, is_param = self.parameter_id(str(item["id"]))
+            if item.get("source") == "matched_row":  # only a value compute mapped from a matched row
+                try:
+                    number = float(item["value"])
+                except (TypeError, ValueError):
+                    number = None
+                if (fid, number) not in self.mapped:
+                    item = {**item, "source": "agent_selected"}
+                    downgraded.append(fid)
             label = item.get("label") or (str(item["id"]) if fid != str(item["id"]) else None)
             fact = Fact(id=fid, value=item["value"], unit=item.get("unit"),
                         source=item.get("source", "user"), label=label,
@@ -189,9 +231,13 @@ class Toolbox:
             saved.append(fact.display())
             if fact.source == "assumed":
                 labels.append(Label(fact.id, "assumed", "a typical value the user accepted, not from the code"))
+            if fact.source == "agent_selected":
+                labels.append(Label(fact.id, "inputs selected by agent", "a value the agent picked, not mapped by compute"))
             if previous is not None and (previous.value, previous.unit) != (fact.value, fact.unit):
                 changes.append((previous, fact))
-        result = ToolResult(f"saved {len(saved)} facts" + (f", {len(changes)} changed" if changes else ""),
+        result = ToolResult(f"saved {len(saved)} facts" + (f", {len(changes)} changed" if changes else "")
+                            + (f"; {', '.join(downgraded)} saved as agent_selected (compute did not map "
+                               f"{'it' if len(downgraded) == 1 else 'them'})" if downgraded else ""),
                             {"saved": saved, "changed": [f"{p.id}: {p.value} -> {f.value}" for p, f in changes],
                              "facts": [f.display() for f in self.store.all().values()]}, labels=labels)
         if changes and self.on_facts_changed is not None:

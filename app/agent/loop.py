@@ -281,4 +281,6 @@ class Agent:
             self.memory.add_message("assistant", turn.answer)
             calls = [{"tool": n, "args": a, "summary": r.summary, "outcome": outcome(n, r)}
                      for n, a, r in turn.replayable]
-            self.memory.record_question(turn.base_question, turn.answer, calls, turn.path())
+            tools = [{"tool": c.name, "args": c.args, "summary": c.result.summary, "error": c.result.error}
+                     for c in turn.calls]
+            self.memory.record_question(turn.base_question, turn.answer, calls, turn.path(), turn.warnings, tools)

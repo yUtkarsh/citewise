@@ -12,11 +12,12 @@ import re
 from app.agent.results import Label, ToolResult
 from app.ingest.pass2.validate import numbers
 
-ANSWER_TOOLS = {"compute", "get_clause", "trace", "applicable_clauses", "plan_procedure", "save_session_facts"}
+ANSWER_TOOLS = {"compute", "calculate", "get_clause", "trace", "applicable_clauses", "plan_procedure",
+                "save_session_facts"}
 ID_LIKE = re.compile(r"\b[A-Z]?\d+(?:[.-]\d+)+\b")  # clause, table and equation numbers
 
 
-PATH_TOOLS = {"trace", "compute", "save_session_facts"}  # once trace names the answer path
+PATH_TOOLS = {"trace", "compute", "calculate", "save_session_facts"}  # once trace names the answer path
 
 
 def answer_labels(calls: list[tuple[str, dict, ToolResult]]) -> list[Label]:

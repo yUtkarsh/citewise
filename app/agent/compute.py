@@ -183,6 +183,9 @@ def compute_equation(graph, target: str, facts: dict[str, Fact], solve_for: str 
             warnings.append(f"{n} is in {fact.unit}, the code gives {params[n].get('units')}; no conversion made")
         if fact.source == ASSUMED:
             labels.append(Label(n, ASSUMED, f"{n} = {fact.value} is an accepted typical value, not from the code"))
+        if fact.source == "agent_selected":
+            labels.append(Label(n, "inputs selected by agent",
+                                f"{n} = {fact.value} was picked by the agent from a table it could not map"))
     value = float(expr.subs({sympy.Symbol(n): sympy.Float(f.number()) for n, f in inputs.items()}))
     unit = result_unit(expr, inputs)
     if unit is None:

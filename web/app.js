@@ -405,6 +405,7 @@ function handleEvent(msg, event, data) {
       onAnswerPath(data);
       msg.answer.classList.remove("streaming");
       msg.answer.innerHTML = renderMarkdown(msg.text, false);
+      for (const w of data.warnings || []) msg.answer.append(el("div", "warning", `Check: ${esc(w)}`));
       msg.meta.textContent = costLine(data.cost);
       break;
     }
@@ -413,6 +414,7 @@ function handleEvent(msg, event, data) {
       break;
     case "error":
       msg.answer.append(el("div", "error", esc(data.message || "Something went wrong")));
+      if (data.code === "session_graph") newChat();  // the next question starts a new chat on this graph
       break;
     default:
       console.debug("unhandled event", event, data);
@@ -432,7 +434,7 @@ function costLine(cost) {
 
 // ---- facts panel -------------------------------------------------------------------------------
 
-const SOURCE_TEXT = { user: "from you", matched_row: "matched row", assumed: "assumed" };
+const SOURCE_TEXT = { user: "from you", matched_row: "matched row", assumed: "assumed", agent_selected: "selected by agent" };
 
 function setFacts(facts) {
   state.facts = facts.map((f) => ({ ...f }));
@@ -563,10 +565,16 @@ function sourceHtml(d) {
 
 // ---- wiring ------------------------------------------------------------------------------------
 
+// One chat session per code graph: a session is tied to the graph it started on.
+function sessionKey() { return `session_id:${state.graph || ""}`; }
+function makeId() { return crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random().toString(16).slice(2); }
 function initSession() {
-  const make = () => (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random().toString(16).slice(2));
-  state.sessionId = storage(() => sessionStorage.getItem("session_id"), null) || make();
-  storage(() => sessionStorage.setItem("session_id", state.sessionId));
+  state.sessionId = storage(() => sessionStorage.getItem(sessionKey()), null) || makeId();
+  storage(() => sessionStorage.setItem(sessionKey(), state.sessionId));
+}
+function newChat() {
+  state.sessionId = makeId();
+  storage(() => sessionStorage.setItem(sessionKey(), state.sessionId));
 }
 
 async function initExample() {
@@ -591,7 +599,8 @@ async function restoreSession(id) {
     return;
   }
   state.sessionId = data.id;
-  storage(() => sessionStorage.setItem("session_id", data.id));
+  if (data.graph) state.graph = data.graph;
+  storage(() => sessionStorage.setItem(sessionKey(), data.id));
   if (data.graph) { state.graph = data.graph; $("#graph-name").textContent = data.graph; }
   if (!data.messages.length) return;
   $("#empty").hidden = true;

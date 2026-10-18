@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Protocol
 
-SOURCES = ("user", "matched_row", "assumed")
+SOURCES = ("user", "matched_row", "assumed", "agent_selected")
 
 
 @dataclass
@@ -24,7 +24,8 @@ class Fact:
 
     def display(self) -> str:
         unit = f" {self.unit}" if self.unit else ""
-        tag = {"user": "from you", "matched_row": "matched row", "assumed": "assumed"}.get(self.source, self.source)
+        tag = {"user": "from you", "matched_row": "matched row", "assumed": "assumed",
+               "agent_selected": "selected by agent"}.get(self.source, self.source)
         return f"{self.id} = {self.value}{unit} ({tag})"
 
     def number(self) -> float | None:

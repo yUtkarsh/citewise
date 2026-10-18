@@ -78,14 +78,19 @@ class MemoryGraph:
                      {"s": self.session, "id": f"{self.session}#m{self._n}", "n": self._n, "role": role,
                       "text": text, "t": time.time()})
 
-    def record_question(self, question: str, answer: str, calls: list[dict], path: list[dict]) -> str:
+    def record_question(self, question: str, answer: str, calls: list[dict], path: list[dict],
+                        warnings: list[str] | None = None, tools: list[dict] | None = None) -> str:
+        """``calls``: the replayable calls (what a what-if re-runs); ``tools``: every tool call
+        of the answer, one line each; ``warnings``: the number guard's warnings."""
         n = self.g.ro_query("MATCH (:Session {id: $s})-[:ASKED]->(q) RETURN count(q)",
                             {"s": self.session}).result_set[0][0] + 1
         qid = f"{self.session}#q{n}"
         self.g.query("MATCH (s:Session {id: $s}) CREATE (s)-[:ASKED]->(:Question {id: $id, n: $n, text: $q, "
-                     "answer: $a, calls: $calls, time: $t})",
+                     "answer: $a, calls: $calls, tools: $tools, warnings: $warnings, time: $t})",
                      {"s": self.session, "id": qid, "n": n, "q": question, "a": answer,
-                      "calls": json.dumps(calls, ensure_ascii=False, default=str), "t": time.time()})
+                      "calls": json.dumps(calls, ensure_ascii=False, default=str),
+                      "tools": json.dumps(tools or [], ensure_ascii=False, default=str),
+                      "warnings": list(warnings or []), "t": time.time()})
         for order, node in enumerate(path):
             label = _stub_label(node["label"])
             self.g.query(f"MATCH (q:Question {{id: $q}}) MERGE (x:{label} {{key: $key}}) "
@@ -102,6 +107,10 @@ class MemoryGraph:
             return None
         text, calls, answer = rows[0]
         return {"text": text, "calls": json.loads(calls or "[]"), "answer": answer}
+
+    def code_graph(self) -> str | None:
+        rows = self.g.ro_query("MATCH (s:Session {id: $s}) RETURN s.code", {"s": self.session}).result_set
+        return rows[0][0] if rows else None
 
     def answer_path(self, question_id: str) -> list[str]:
         rows = self.g.ro_query("MATCH (:Question {id: $q})-[v:ANSWERED_VIA]->(x) RETURN x.id ORDER BY v.order",

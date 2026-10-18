@@ -29,6 +29,13 @@ CHUNK = 160  # characters per answer_delta
 TAGS = {"unreviewed", "inferred", "assumed"}
 
 
+class SessionGraphError(RuntimeError):
+    """A chat session is tied to one code graph; another graph needs a new chat."""
+
+    def __init__(self, session_graph: str, asked: str):
+        super().__init__(f"this chat uses {session_graph}; start a new chat to ask about {asked}")
+
+
 @dataclass
 class Chat:
     agent: Agent
@@ -83,9 +90,16 @@ def get_chat(session_id: str | None, graph: str | None) -> Chat:
     graph = graph or os.getenv("CODE_GRAPH") or DEFAULT_GRAPH
     with _chats_lock:
         chat = _chats.get(session_id) if session_id else None
-        if chat is not None and chat.graph == graph:
+        if chat is not None:
+            if chat.graph != graph:
+                raise SessionGraphError(chat.graph, graph)
             return chat
         db = get_db()
+        if session_id and memory_graph_name() in db.list_graphs():
+            stored = db.select_graph(memory_graph_name()).ro_query(
+                "MATCH (s:Session {id: $s}) RETURN s.code", {"s": session_id}).result_set
+            if stored and stored[0][0] and stored[0][0] != graph:
+                raise SessionGraphError(stored[0][0], graph)
         code = db.select_graph(graph)
         docs = code.ro_query("MATCH (d:Document) RETURN d.title, d.edition LIMIT 1").result_set
         document = " / ".join(x for x in docs[0] if x) if docs else graph
@@ -173,7 +187,8 @@ def done_event(agent: Agent, turn: Turn) -> dict:
     cost = {"usd": round(turn.cost, 4),
             "input_tokens": usage["input_tokens"] + usage["cache_read_input_tokens"] + usage["cache_creation_input_tokens"],
             "output_tokens": usage["output_tokens"], "tool_calls": len(turn.calls), "model": agent.model}
-    return {"path": {"nodes": path, "edges": edges}, "labels": labels, "citations": citations, "cost": cost}
+    return {"path": {"nodes": path, "edges": edges}, "labels": labels, "citations": citations, "cost": cost,
+            "warnings": list(turn.warnings)}
 
 
 def chunks(text: str) -> Iterator[str]:
@@ -238,6 +253,8 @@ def stream_chat(question: str, *, session_id: str | None, graph: str | None,
             chat = get_chat(session_id, graph)
             with chat.lock:  # one question at a time per session
                 _run(chat, question, facts, rerun, emit)
+        except SessionGraphError as exc:
+            emit("error", {"message": str(exc), "code": "session_graph"})
         except Exception as exc:  # the page shows it and stops
             emit("error", {"message": f"{type(exc).__name__}: {exc}"})
         finally:
