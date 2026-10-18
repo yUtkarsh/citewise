@@ -52,6 +52,7 @@ function card(c) {
     <div class="card-actions">
       <a class="btn primary" href="chat.html?graph=${encodeURIComponent(c.graph)}">Open chat</a>
       <a class="btn" href="report.html?graph=${encodeURIComponent(c.graph)}">View report</a>
+      <a class="btn" href="review.html?graph=${encodeURIComponent(c.graph)}">Review${n.flagged ? ` <span class="count">${fmtInt(n.flagged)}</span>` : ""}</a>
       ${c.job ? `<a class="btn" href="ingest.html?job=${encodeURIComponent(c.job.id)}">Progress</a>`
               : c.has_pdf ? `<button class="btn ghost" type="button" data-reingest="${esc(c.graph)}">Re-ingest</button>` : ""}
     </div>`;

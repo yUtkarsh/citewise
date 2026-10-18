@@ -4,10 +4,12 @@ from fastapi import FastAPI
 
 from app.api.chat_routes import mount_web, router as chat_router
 from app.api.ingest_routes import router as ingest_router
+from app.api.review_routes import router as review_router
 from app.api.session_routes import router as session_router
 
 app = FastAPI(title="Code Graph Agent")
 app.include_router(chat_router)
 app.include_router(ingest_router)
 app.include_router(session_router)
+app.include_router(review_router)
 mount_web(app)  # last: it serves "/"

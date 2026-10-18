@@ -221,3 +221,12 @@ Jobs live in memory: a server restart forgets running jobs (the graph and report
 The chat page opened as `chat.html?graph=G&session=ID` shows the stored messages and facts and
 sends `session_id: ID` with the next question, so `stream_chat` should continue that session
 (`MemoryGraph(db, graph, session_id=ID)`) rather than start a new one.
+
+## Review queue (`app/api/review_routes.py`)
+
+| Route | What it does |
+| --- | --- |
+| `GET /review/{graph}` | Queue items: Clause and Table nodes with flags (one per Pass 2 job), plus rejected ones awaiting approval; sorted high → medium → low, then page |
+| `GET /review/{graph}/item/{label}/{id}` | Flags, source (clause text, or table crops) and what was extracted (equations with crop + LaTeX + SymPy, parameters, conditions, requirements, exceptions; or parsed rows, GIVES, footnote rules) |
+| `POST /review/{graph}/item/{label}/{id}/approve` | `{note?}` → `review_status: approved` on the node and its equations or rows, and `PinStore.approve()` on its pinned job(s): never extracted again |
+| `POST /review/{graph}/item/{label}/{id}/reject` | `{note}` → re-runs that job on `MODEL_REVIEW` with the note appended as `--hint` does (strict); the new answer replaces the graph and pin only if `passes()`; returns before, after, each new answer, cost and log. Status: `unreviewed` (replaced, back for approval), `rejected`, or `needs_manual` after two failed rejections. Cap $1 per reject |

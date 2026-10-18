@@ -25,6 +25,7 @@ function head(r) {
       </div>
       <div class="card-actions">
         <span class="status st-${esc(c.status.state)}">${esc(c.status.text)}</span>
+        <a class="btn" href="review.html?graph=${encodeURIComponent(c.graph)}">Review queue</a>
         <a class="btn primary" href="chat.html?graph=${encodeURIComponent(c.graph)}">Open chat</a>
       </div>
     </div>`;
@@ -78,7 +79,7 @@ function flags(r) {
   const sev = r.flags_by_severity || {};
   return `<div class="panel"><h2 class="panel-h">Flags by reason</h2>
     ${entries.length ? bars(entries, (k) => worst[k]) : `<p class="hint">No flags.</p>`}
-    <p class="hint">By severity: ${["high", "medium", "low"].map((s) => `${s} ${fmtInt(sev[s] || 0)}`).join(" · ")}. Each flag is one item for the review queue.</p></div>`;
+    <p class="hint">By severity: ${["high", "medium", "low"].map((s) => `${s} ${fmtInt(sev[s] || 0)}`).join(" · ")}. <a href="review.html?graph=${encodeURIComponent(r.card.graph)}">Open the review queue →</a></p></div>`;
 }
 
 function warnings(r) {
