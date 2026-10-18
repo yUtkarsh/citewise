@@ -117,6 +117,13 @@ def queue(graph) -> list[dict]:
     return items
 
 
+def to_review(graph) -> dict:
+    """Open items (not approved, not needs_manual): high plus medium to review, low as notes."""
+    open_items = [i for i in queue(graph) if i["review_status"] not in ("approved", "needs_manual")]
+    notes = sum(1 for i in open_items if i["severity"] == "low")
+    return {"to_review": len(open_items) - notes, "notes": notes}
+
+
 @router.get("/review/{name}")
 def review_queue(name: str) -> dict:
     graph = _code_graph(name)

@@ -616,10 +616,27 @@ async function restoreSession(id) {
   scrollChat();
 }
 
+// Back to the code page this chat belongs to, named by the code's designation.
+async function setBackLink() {
+  const link = $("#back-code");
+  if (!state.graph || !link) return;
+  link.href = `/code/${encodeURIComponent(state.graph)}`;
+  link.hidden = false;
+  try {
+    const c = await (await fetch(`/codes/${encodeURIComponent(state.graph)}`)).json();
+    link.textContent = `← ${c.designation || c.edition || c.title || state.graph}`;
+  } catch { link.textContent = `← ${state.graph}`; }
+}
+
 function init() {
   initSession();
-  const reopen = new URLSearchParams(location.search).get("session");
-  if (reopen) restoreSession(reopen);
+  const params = new URLSearchParams(location.search);
+  const reopen = params.get("session");
+  if (reopen) restoreSession(reopen).then(setBackLink);
+  else {
+    if (params.has("new")) newChat();  // from the code page's New chat: never reuse the tab's last session
+    setBackLink();
+  }
   initTheme();
   initGraph();
   initExample();

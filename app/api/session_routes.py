@@ -8,7 +8,7 @@ from fastapi import APIRouter, HTTPException
 
 from app.graph.connection import get_db
 
-RECENT = 5
+RECENT = 500
 router = APIRouter()
 
 
@@ -38,9 +38,31 @@ def recent_sessions(code: str, limit: int = RECENT) -> dict:
         "WITH s, count(q) AS questions, max(q.time) AS last "
         "OPTIONAL MATCH (s)-[:ASKED]->(f:Question {n: 1}) "
         "RETURN s.id, s.started, coalesce(last, s.started) AS t, questions, f.text "
-        "ORDER BY t DESC LIMIT $limit"), {"code": code, "limit": max(1, min(limit, 50))})
+        "ORDER BY t DESC LIMIT $limit"), {"code": code, "limit": max(1, min(limit, RECENT))})
     return {"sessions": [{"id": sid, "started": started, "last": last, "questions": n, "first_question": first}
                          for sid, started, last, n, first in rows if n]}
+
+
+@router.delete("/sessions/{session_id}")
+def delete_session(session_id: str) -> dict:
+    """Delete one chat: its session, messages and questions, and the stub nodes only it
+    pointed to. The code graph is never touched."""
+    g = _memory()
+    if g is None or not _rows(g, "MATCH (s:Session {id: $s}) RETURN s.id", {"s": session_id}):
+        raise HTTPException(404, "no such chat session")
+    stubs = [i for (i,) in _rows(g, (
+        "MATCH (s:Session {id: $s}) OPTIONAL MATCH (s)-[:ASSUMES|MATCHED]->(a) "
+        "OPTIONAL MATCH (s)-[:ASKED]->(:Question)-[:ANSWERED_VIA]->(b) "
+        "WITH collect(DISTINCT id(a)) + collect(DISTINCT id(b)) AS ids UNWIND ids AS i RETURN DISTINCT i"),
+        {"s": session_id}) if i is not None]
+    counts = _rows(g, "MATCH (s:Session {id: $s}) OPTIONAL MATCH (s)-[:HAS_MESSAGE]->(m) "
+                      "OPTIONAL MATCH (s)-[:ASKED]->(q) RETURN count(DISTINCT m), count(DISTINCT q)", {"s": session_id})
+    g.query("MATCH (s:Session {id: $s})-[:HAS_MESSAGE|ASKED]->(x) DETACH DELETE x", {"s": session_id})
+    g.query("MATCH (s:Session {id: $s}) DETACH DELETE s", {"s": session_id})
+    if stubs:
+        g.query("UNWIND $ids AS i MATCH (n) WHERE id(n) = i AND NOT (n)--() DELETE n", {"ids": stubs})
+    messages, questions = counts[0] if counts else (0, 0)
+    return {"deleted": session_id, "messages": messages, "questions": questions}
 
 
 @router.get("/sessions/{session_id}")

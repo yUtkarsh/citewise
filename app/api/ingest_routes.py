@@ -21,7 +21,7 @@ from typing import Any
 import uuid
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 import pymupdf
 
@@ -94,17 +94,33 @@ def code_card(name: str) -> dict:
     counts = _label_counts(graph)
     flagged = sum(v["flagged"] for v in counts.values())
     job = _active_job_for(name)
+    from app.api.review_routes import to_review
+    review = to_review(graph)
     return {
         "graph": name, "title": doc.get("title") or name, "edition": doc.get("edition"),
         "jurisdiction": doc.get("jurisdiction"), "designation": doc.get("self_designation"),
         "pages": doc.get("page_count"), "file_hash": doc.get("file_hash"), "coverage": doc.get("coverage"),
         "counts": {"clauses": counts.get("Clause", {}).get("count", 0), "tables": counts.get("Table", {}).get("count", 0),
                    "equations": counts.get("Equation", {}).get("count", 0), "flagged": flagged,
-                   "symbol_warnings": counts.get("FlaggedLine", {}).get("count", 0)},
+                   "symbol_warnings": counts.get("FlaggedLine", {}).get("count", 0),
+                   "to_review": review["to_review"], "notes": review["notes"]},
         "status": _ingest_status(counts),
         "job": {"id": job.id, "stage": job.stage} if job else None,
         "has_pdf": _pdf_for(name) is not None,
     }
+
+
+@router.get("/code/{name}")
+def code_page(name: str) -> FileResponse:
+    """The code page (web/code.html); it reads the graph name from its own path."""
+    return FileResponse(ROOT / "web" / "code.html", media_type="text/html")
+
+
+@router.get("/codes/{name}")
+def get_code(name: str) -> dict:
+    if name not in _code_graphs():
+        raise HTTPException(404, f"no code graph {name}")
+    return code_card(name)
 
 
 @router.get("/codes")
