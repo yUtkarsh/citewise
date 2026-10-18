@@ -172,15 +172,72 @@ def clause_extracted(graph, cid: str) -> dict:
 
 
 def table_extracted(graph, tid: str) -> dict:
-    rows = [{"id": i, "cells": _json(cells, []), "values": _json(values, []), "conditions": _json(conds, []),
-             "status": st}
-            for i, cells, values, conds, st in _rows(graph, (
-                "MATCH (:Table {id: $id})-[h:HAS_ROW]->(r:Row) RETURN r.id, r.cells, r.values, r.conditions, r.status "
-                "ORDER BY h.index"), {"id": tid})]
-    params = [r[0] for r in _rows(graph, "MATCH (:Table {id: $id})-[:GIVES]->(p) RETURN p.id ORDER BY p.id", {"id": tid})]
-    notes = [{"text": t, "rule": rule, "kind": kind} for t, rule, kind in _rows(graph, (
-        "MATCH (:Table {id: $id})-[:HAS_FOOTNOTE]->(f) RETURN f.text, f.rule, f.rule_kind ORDER BY f.id"), {"id": tid})]
-    return {"rows": rows, "gives": params, "footnotes": notes}
+    rows = [{"id": i, "index": index, "is_header": bool(header), "cells": _json(cells, []), "values": _json(values, []),
+             "conditions": _json(conds, []), "blank": _json(blank, []), "status": st}
+            for i, index, header, cells, values, conds, blank, st in _rows(graph, (
+                "MATCH (:Table {id: $id})-[h:HAS_ROW]->(r:Row) RETURN r.id, h.index, r.is_header, r.cells, r.values, "
+                "r.conditions, r.blank_cells, r.status ORDER BY h.index"), {"id": tid})]
+    gives = _rows(graph, "MATCH (:Table {id: $id})-[g:GIVES]->(p) RETURN p.id, g.col, g.cols, g.header_text, g.units "
+                         "ORDER BY p.id", {"id": tid})
+    notes = [{"marker": m, "text": t, "rule": rule, "kind": kind} for m, t, rule, kind in _rows(graph, (
+        "MATCH (:Table {id: $id})-[:HAS_FOOTNOTE]->(f) RETURN f.marker, f.text, f.rule, f.rule_kind ORDER BY f.id"),
+        {"id": tid})]
+    columns = [{"col": c, "parameter_id": pid, "header_text": text, "units": units}
+               for pid, col, cols, text, units in gives for c in (cols or [col]) if c is not None]
+    view = table_view(columns, [{"row": r["index"], "conditions": r["conditions"], "values": r["values"],
+                                 "blank": r["blank"]}
+                                for r in rows if not r["is_header"] and (r["values"] or r["conditions"] or r["blank"])],
+                      [{"marker": n["marker"], "kind": n["kind"] or "note", "rule": n["rule"] or n["text"]} for n in notes])
+    view["printed_header"] = printed_header(rows)
+    return {"rows": rows, "gives": [g[0] for g in gives], "footnotes": notes, "view": view}
+
+
+def printed_header(rows: list[dict]) -> dict[str, str]:
+    """Column labels as printed: the full-width grid rows above the first row with values,
+    joined top to bottom per column (the header cells of the skeleton grid)."""
+    first = next((i for i, r in enumerate(rows) if r["values"] or r["conditions"]), len(rows))
+    head = [r["cells"] for r in rows[:first] if r["cells"]]
+    width = max((len(c) for c in head), default=0)
+    out: dict[str, str] = {}
+    for cells in head:
+        if len(cells) != width:  # a spanning caption row: its cells do not line up with columns
+            continue
+        for col, text in enumerate(cells):
+            if text and text.strip():
+                out[str(col)] = f"{out.get(str(col), '')} {text.strip()}".strip()
+    return out
+
+
+def table_view(columns: list[dict], rows: list[dict], footnotes: list[dict]) -> dict:
+    """One shape for a table answer, stored or new: the value columns with their header
+    parameter, then each row's conditions and values by column."""
+    seen, cols = set(), []
+    for c in sorted(columns, key=lambda c: (c["col"], c["parameter_id"])):
+        if (c["col"], c["parameter_id"]) not in seen:
+            seen.add((c["col"], c["parameter_id"]))
+            cols.append(c)
+    return {"columns": cols,
+            "rows": sorted(({"row": r["row"], "conditions": r.get("conditions") or [],
+                             "values": {str(v["col"]): {k: v.get(k) for k in ("value", "number", "unit", "formula", "source")}
+                                        for v in r.get("values") or []},
+                             "blank": r.get("blank") or []} for r in rows), key=lambda r: r["row"]),
+            "footnotes": footnotes}
+
+
+def _answer_table_view(outputs: list) -> dict:
+    """The table view of a new answer (all parts of a split table together)."""
+    columns, rows, notes = [], [], []
+    for out in outputs:
+        columns += [{"col": h.col, "parameter_id": h.parameter_id, "header_text": h.header_text, "units": h.units}
+                    for h in out.header_parameters]
+        blanks = {}
+        for b in out.blank_cells:
+            blanks.setdefault(b.row, []).append(b.model_dump())
+        rows += [{"row": r.row, "conditions": r.conditions, "values": [v.model_dump() for v in r.values],
+                  "blank": blanks.pop(r.row, [])} for r in out.rows]
+        rows += [{"row": i, "conditions": [], "values": [], "blank": b} for i, b in blanks.items()]
+        notes += [{"marker": f.marker, "kind": f.kind, "rule": f.rule} for f in out.footnote_rules]
+    return table_view(columns, rows, notes)
 
 
 @router.get("/review/{name}/item/{label}/{nid:path}")
@@ -257,8 +314,9 @@ def _summary(output, job) -> dict | None:
                                for p in output.parameters],
                 "conditions": [c.text for c in output.conditions],
                 "requirements": [r.text for r in output.requirements],
-                "exceptions": [x.text for x in output.exceptions]}
-    return {"raw": output.model_dump(mode="json")}
+                "exceptions": [x.text for x in output.exceptions],
+                "raw": output.model_dump(mode="json")}
+    return {"view": _answer_table_view([output]), "raw": output.model_dump(mode="json")}
 
 
 async def rerun_with_note(graph, name: str, label: str, nid: str, note: str, paths: Paths,
@@ -338,8 +396,9 @@ async def rerun_with_note(graph, name: str, label: str, nid: str, note: str, pat
                         "stored_status": stored.get("status") if stored else None})
     if len(outcomes) < len(jobs):
         say("not every job ran (cost cap or a failed request)")
+    after_view = _answer_table_view([o.output for o in outcomes if o.output is not None]) if label == "Table" else None
     return {"results": results, "replaced": bool(results) and all(r["kept"] for r in results),
-            "cost": runner.costs.summary(), "model": model, "log": lines}
+            "after_view": after_view, "cost": runner.costs.summary(), "model": model, "log": lines}
 
 
 async def reject(graph, name: str, label: str, nid: str, note: str, paths: Paths, transport=None) -> dict:

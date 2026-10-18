@@ -549,3 +549,48 @@ ul.plain { margin: 0; padding-left: 18px; font-size: 13px; }
 .notes-toggle { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; font-size: 13px; color: var(--ink-2); cursor: pointer; }
 .notes-toggle span { font-family: var(--mono); font-size: 11.5px; color: var(--ink-3); }
 .notes-toggle input { accent-color: var(--accent); }
+
+/* review: answers rendered as items, side by side with the crop */
+.cmp { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; align-items: start; margin-top: 6px; }
+.cmp3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.cmp-col { border: 1px solid var(--line); border-radius: 8px; padding: 10px; min-width: 0; background: var(--bg); }
+.cmp-col.kept { border-color: var(--ok); }
+.cmp-col.dropped { border-style: dashed; }
+.cmp-crop { position: sticky; top: 12px; }
+.cmp-crop .crop { width: 100%; margin-bottom: 6px; border: 1px solid var(--line); }
+table.tview { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+table.tview th, table.tview td { border: 1px solid var(--line); padding: 4px 6px; vertical-align: top; text-align: left; }
+table.tview th { background: var(--surface-2); font-weight: 600; font-size: 11.5px; }
+table.tview .th-text { display: block; }
+table.tview .th-param { display: block; font-family: var(--mono); font-weight: 400; font-size: 10.5px; color: var(--chip-ink); }
+table.tview .th-param.none { color: var(--ink-3); }
+table.tview td.num { font-family: var(--mono); text-align: right; white-space: nowrap; }
+table.tview .rn { font-family: var(--mono); font-size: 10.5px; color: var(--ink-3); width: 1%; }
+table.tview td.cond { min-width: 120px; }
+table.tview .unit { color: var(--ink-3); font-size: 11px; }
+table.tview .formula { display: block; font-size: 10.5px; color: var(--ink-2); white-space: normal; }
+table.tview .src-img { margin-left: 4px; font-size: 9.5px; padding: 0 3px; border-radius: 3px; border: 1px solid var(--warn); color: var(--warn); }
+table.tview .blank { font-family: var(--font); font-style: italic; color: var(--ink-2); white-space: normal; }
+table.tview tr.missing td { color: var(--ink-3); font-style: italic; background: repeating-linear-gradient(45deg, transparent 0 6px, var(--surface-2) 6px 12px); }
+/* changed: struck in "before", marked in "after" */
+.was { background: var(--bad-soft) !important; box-shadow: inset 3px 0 0 var(--bad); }
+.chg { background: var(--accent-soft) !important; box-shadow: inset 3px 0 0 var(--accent); }
+tr.chg-row td, tr.was-row td { background: var(--accent-soft); }
+tr.was-row td { background: var(--bad-soft); }
+.eq-item { padding: 6px 8px; border-radius: 6px; margin-bottom: 6px; }
+.eq-id { font-family: var(--mono); font-size: 11px; color: var(--ink-3); }
+.cmp-col .issues li { padding: 1px 4px; border-radius: 4px; }
+.diff-count { margin: 0 0 6px; }
+ul.notes { margin-top: 8px; }
+ul.notes li { padding: 1px 4px; border-radius: 4px; }
+details.json { margin-top: 8px; }
+details.json summary { cursor: pointer; font-size: 12px; color: var(--ink-2); }
+details.json pre { max-height: 360px; }
+@media (max-width: 1200px) {
+  .cmp3 { grid-template-columns: 1fr 1fr; }
+  .cmp3 .cmp-crop { grid-column: 1 / -1; position: static; }
+  .cmp3 .cmp-crop .crop { max-width: 640px; }
+}
+@media (max-width: 860px) {
+  .cmp3 { grid-template-columns: 1fr; }
+}

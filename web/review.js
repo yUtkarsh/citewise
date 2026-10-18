@@ -134,13 +134,87 @@ function extractedLists(x) {
 
 function tableHtml(d) {
   const x = d.extracted;
-  const rows = x.rows.map((r) => `<tr class="${r.status === "flagged" ? "hit" : ""}">${(r.cells || []).map((c) => `<td>${esc(c)}</td>`).join("")}</tr>`).join("");
   return `
-    <div class="section-label">Source: table crop</div>
-    <div class="crops">${d.source.crops.map((u) => `<img class="crop" src="${esc(u)}" alt="Table crop" loading="lazy">`).join("") || `<span class="hint">no crop</span>`}</div>
-    <div class="section-label">Parsed rows${x.gives.length ? ` · gives ${esc(x.gives.join(", "))}` : ""}</div>
-    <div class="table-scroll"><table class="rows">${rows}</table></div>
-    ${x.footnotes.length ? `<div class="section-label">Footnote rules</div><ul class="plain">${x.footnotes.map((f) => `<li><b>${esc(f.kind || "note")}</b>: ${esc(f.rule || f.text)}</li>`).join("")}</ul>` : ""}`;
+    <div class="section-label">Source beside what was extracted${x.gives.length ? ` · gives ${esc(x.gives.join(", "))}` : ""}</div>
+    <div class="cmp">
+      ${cropColumn(d.source.crops)}
+      <div class="cmp-col"><div class="ba-h">Extracted (in the graph)</div>${tableViewHtml(x.view, null, x.view.printed_header, "")}</div>
+    </div>`;
+}
+
+function cropColumn(crops) {
+  return `<div class="cmp-col cmp-crop"><div class="ba-h">PDF crop</div>${(crops || []).map((u) =>
+    `<img class="crop" src="${esc(u)}" alt="Table crop" loading="lazy">`).join("") || `<span class="hint">no crop</span>`}</div>`;
+}
+
+// ---- table answers, rendered as tables: value columns, then each row's conditions and values ----
+
+const cellKey = (v) => (v ? `${v.value ?? ""}|${v.unit ?? ""}|${v.formula ?? ""}` : "");
+const blankKey = (b) => (b || []).map((x) => `${x.col}:${x.interpretation}`).sort().join("|");
+
+function valueColumns(view, other) {
+  const cols = new Set();
+  for (const v of [view, other]) {
+    if (!v) continue;
+    for (const r of v.rows) Object.keys(r.values).forEach((c) => cols.add(Number(c)));
+    for (const b of v.rows.flatMap((r) => r.blank)) cols.add(Number(b.col));
+  }
+  if (!cols.size) for (const v of [view, other]) (v ? v.columns : []).forEach((c) => cols.add(Number(c.col)));
+  return [...cols].sort((a, b) => a - b);
+}
+
+function paramsAt(view, col) {
+  return view ? view.columns.filter((c) => Number(c.col) === col) : [];
+}
+
+// side: "" (no comparison), "before" or "after"; other: the view on the other side
+function tableViewHtml(view, other, printed, side) {
+  if (!view) return `<span class="hint">no answer</span>`;
+  const mark = side === "before" ? "was" : "chg";
+  const cols = valueColumns(view, other);
+  const byRow = (v) => new Map((v ? v.rows : []).map((r) => [r.row, r]));
+  const mine = byRow(view), theirs = byRow(other);
+  const rowIds = [...new Set([...mine.keys(), ...(other ? theirs.keys() : [])])].sort((a, b) => a - b);
+  let changed = 0;
+  const head = cols.map((c) => {
+    const p = paramsAt(view, c), q = paramsAt(other, c);
+    const key = (ps) => ps.map((x) => `${x.parameter_id}|${x.units ?? ""}`).sort().join(",");
+    const diff = other && key(p) !== key(q);
+    if (diff) changed++;
+    const label = (printed && printed[String(c)]) || (p[0] && p[0].header_text) || `col ${c}`;
+    return `<th class="${diff ? mark : ""}"><span class="th-text">${esc(label)}</span>`
+      + `${p.map((x) => `<span class="th-param">${esc(x.parameter_id)}${x.units ? ` (${esc(x.units)})` : ""}</span>`).join("") || `<span class="th-param none">no parameter</span>`}</th>`;
+  }).join("");
+  const body = rowIds.map((id) => {
+    const r = mine.get(id), o = theirs.get(id);
+    if (!r) return `<tr class="missing"><td class="rn">${id}</td><td colspan="${cols.length + 1}">not in this answer</td></tr>`;
+    const condDiff = other && (!o || (r.conditions || []).join("; ") !== (o.conditions || []).join("; "));
+    if (condDiff) changed++;
+    const cells = cols.map((c) => {
+      const v = r.values[String(c)], w = o ? o.values[String(c)] : undefined;
+      const blank = r.blank.filter((b) => Number(b.col) === c);
+      const diff = other && (cellKey(v) !== cellKey(w) || blankKey(blank) !== blankKey(o ? o.blank.filter((b) => Number(b.col) === c) : []));
+      if (diff) changed++;
+      const inner = v ? `${esc(v.value)}${v.unit ? ` <span class="unit">${esc(v.unit)}</span>` : ""}`
+        + `${v.formula ? `<span class="formula">${esc(v.formula)}</span>` : ""}${v.source === "image" ? `<span class="src-img" title="read from the image">img</span>` : ""}`
+        : blank.length ? `<span class="blank">blank: ${esc(blank.map((b) => b.interpretation).join("; "))}</span>` : "";
+      return `<td class="num ${diff ? mark : ""}">${inner}</td>`;
+    }).join("");
+    return `<tr class="${other && !o ? mark + "-row" : ""}"><td class="rn">${id}</td>`
+      + `<td class="cond ${condDiff ? mark : ""}">${esc((r.conditions || []).join("; ")) || `<span class="hint">–</span>`}</td>${cells}</tr>`;
+  }).join("");
+  const notes = (view.footnotes || []).map((f) => {
+    const diff = other && !(other.footnotes || []).some((g) => g.marker === f.marker && g.rule === f.rule);
+    if (diff) changed++;
+    return `<li class="${diff ? mark : ""}"><b>${esc(f.marker ? f.marker + " · " : "")}${esc(f.kind)}</b>: ${esc(f.rule)}</li>`;
+  }).join("");
+  const summary = other ? `<p class="hint diff-count">${changed ? `${changed} ${changed === 1 ? "difference" : "differences"} highlighted` : "No differences"}</p>` : "";
+  return `${summary}<div class="table-scroll"><table class="tview"><thead><tr><th class="rn">row</th><th>Conditions</th>${head}</tr></thead>`
+    + `<tbody>${body}</tbody></table></div>${notes ? `<ul class="plain notes">${notes}</ul>` : ""}`;
+}
+
+function jsonToggle(value) {
+  return `<details class="json"><summary>Show JSON</summary><pre class="log">${esc(JSON.stringify(value, null, 1))}</pre></details>`;
 }
 
 function wireActions(d) {
@@ -185,11 +259,29 @@ function updateItem(d, status) {
   renderQueue();
 }
 
-function answerHtml(a) {
-  if (!a) return `<span class="hint">no answer</span>`;
-  if (a.raw) return `<pre class="log">${esc(JSON.stringify(a.raw, null, 1).slice(0, 4000))}</pre>`;
-  return (a.equations || []).map((e) => `<div class="tex">${tex(e.latex)}</div><div class="sympy">SymPy: ${esc(e.sympy)}</div>`).join("")
-    + extractedLists(a);
+// ---- clause answers, rendered as items: equations, then the extracted lists ----
+
+function clauseItemsHtml(x, other, side) {
+  const mark = side === "before" ? "was" : "chg";
+  const eqOther = new Map(((other && other.equations) || []).map((e) => [e.id, e]));
+  const eqs = (x.equations || []).map((e) => {
+    const o = eqOther.get(e.id);
+    const diff = other && (!o || o.latex !== e.latex || o.sympy !== e.sympy);
+    return `<div class="eq-item ${diff ? mark : ""}"><div class="eq-id">${esc(e.id)}</div><div class="tex">${tex(e.latex)}</div>`
+      + `<div class="sympy">SymPy: ${esc(e.sympy || "–")}${e.computes && e.computes.length ? ` · computes ${esc([].concat(e.computes).join(", "))}` : ""}</div></div>`;
+  }).join("");
+  const list = (name, field, key, render) => {
+    const items = x[field];
+    if (!items || !items.length) return "";
+    const otherKeys = other ? (other[field] || []).map(key) : null;
+    return `<details class="issues" open><summary>${name} (${items.length})</summary><ul>${items.map((it) =>
+      `<li class="${otherKeys && !otherKeys.includes(key(it)) ? mark : ""}">${render(it)}</li>`).join("")}</ul></details>`;
+  };
+  return eqs
+    + list("Parameters", "parameters", (p) => `${p.id}|${p.description}`, (p) => `${tex(p.latex || p.id, false)} <span class="hint">${esc(p.id)}</span> ${esc(p.description || "")}${p.units ? ` (${esc(p.units)})` : ""}`)
+    + list("Conditions", "conditions", (t) => t, esc)
+    + list("Requirements", "requirements", (t) => t, esc)
+    + list("Exceptions", "exceptions", (t) => t, esc);
 }
 
 function compareHtml(r) {
@@ -197,15 +289,26 @@ function compareHtml(r) {
   const cost = r.cost && r.cost.total_cost_usd != null ? `$${r.cost.total_cost_usd.toFixed(4)}` : "–";
   const res = r.results.map((x) => `<div class="flags-line"><b>${esc(x.job)}</b>: new answer ${esc(x.status)}${x.kept ? ", kept" : ", not kept"}`
     + (x.issues.length ? `<ul class="flags">${x.issues.map((i) => `<li class="sev-${esc(i.severity || "medium")}"><b>${esc(i.reason || i.code)}</b>${i.detail ? `: ${esc(i.detail)}` : ""}</li>`).join("")}</ul>` : "") + `</div>`).join("");
-  const beforeHtml = r.before.label === "Clause"
-    ? before.equations.map((e) => `<div class="tex">${tex(e.latex)}</div><div class="sympy">SymPy: ${esc(e.sympy)}</div>`).join("") + extractedLists(before)
-    : `<p class="hint">${before.rows.length} rows</p>`;
+  const afterTitle = r.replaced ? "After: new answer (kept)" : "After: new answer (not kept)";
+  const raws = r.results.map((x) => x.answer && x.answer.raw).filter(Boolean);
+  const afterJson = jsonToggle(raws.length === 1 ? raws[0] : raws);
+  let body;
+  if (r.before.label === "Table") {
+    const printed = before.view.printed_header;
+    body = `<div class="cmp cmp3">
+      ${cropColumn(r.before.source.crops)}
+      <div class="cmp-col"><div class="ba-h">Before</div>${tableViewHtml(before.view, r.after_view, printed, "before")}${jsonToggle(before.view)}</div>
+      <div class="cmp-col ${r.replaced ? "kept" : "dropped"}"><div class="ba-h">${afterTitle}</div>${tableViewHtml(r.after_view, before.view, printed, "after")}${afterJson}</div>
+    </div>`;
+  } else {
+    const after = r.results[0] && r.results[0].answer;
+    body = `<div class="cmp">
+      <div class="cmp-col"><div class="ba-h">Before</div>${clauseItemsHtml(before, after, "before")}${jsonToggle(before)}</div>
+      <div class="cmp-col ${r.replaced ? "kept" : "dropped"}"><div class="ba-h">${afterTitle}</div>${after ? clauseItemsHtml(after, before, "after") : `<span class="hint">no answer</span>`}${afterJson}</div>
+    </div>`;
+  }
   return `<div class="section-label">Before and after · ${esc(r.model)} · ${cost}</div>
-    ${res}
-    <div class="ba">
-      <div class="ba-col"><div class="ba-h">Before</div>${beforeHtml}</div>
-      <div class="ba-col ${r.replaced ? "kept" : "dropped"}"><div class="ba-h">After: ${r.replaced ? "new answer (kept)" : "new answer (not kept)"}</div>${r.results.map((x) => answerHtml(x.answer)).join("")}</div>
-    </div>
+    ${res}${body}
     <details class="issues"><summary>Run log</summary><pre class="log">${esc(r.log.join("\n"))}</pre></details>`;
 }
 
