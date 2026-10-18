@@ -108,7 +108,7 @@ def test_second_run_is_served_from_cache_even_when_flagged(tmp_path):
 
 def test_images_are_built_only_on_a_cache_miss(tmp_path, monkeypatch):
     built = []
-    monkeypatch.setattr(rn, "content_blocks", lambda j, doc: built.append(j.id) or [{"type": "text", "text": j.text}])
+    monkeypatch.setattr(rn, "content_blocks", lambda j, doc, save=None: built.append(j.id) or [{"type": "text", "text": j.text}])
     send, _ = fake('{"value": 1}')
     r, _ = make_runner(tmp_path, send)
     run(r, [job()])
@@ -249,3 +249,30 @@ def test_cached_first_attempt_failing_a_newer_check_gets_its_one_retry(tmp_path)
     r2, _ = make_runner(tmp_path, send)
     run(r2, [job()])
     assert len(calls) == 2  # now cached with both attempts
+
+
+def test_no_cache_asks_again_and_replaces_the_answer(tmp_path):
+    send, calls = fake('{"value": 1}', '{"value": 7}')
+    r, _ = make_runner(tmp_path, send)
+    run(r, [job()])
+    again, _ = make_runner(tmp_path, send, use_cache=False)
+    [o] = run(again, [job()])
+    assert len(calls) == 2 and o.output.value == 7 and not o.call.from_cache
+    r3, _ = make_runner(tmp_path, send)
+    [o3] = run(r3, [job()])
+    assert o3.call.from_cache and o3.output.value == 7
+
+
+def test_saved_images_are_the_bytes_sent(tmp_path, fema_profile):
+    import base64
+    import pymupdf
+    from app.ingest.pass2 import images as img
+    from tests.conftest import FIXTURES
+
+    doc = pymupdf.open(FIXTURES / "text.pdf")
+    j = job()
+    j.images = [img.region("hash", 1, (50, 50, 300, 200), "clause region, page 1")]
+    blocks = rn.content_blocks(j, doc, tmp_path / "debug")
+    [saved] = list((tmp_path / "debug").rglob("*.png"))
+    sent = next(b for b in blocks if b["type"] == "image")["source"]["data"]
+    assert base64.standard_b64decode(sent) == saved.read_bytes()

@@ -396,3 +396,27 @@ def test_where_block_lines_take_character_level_corrections():
 def test_primes_are_one_character():
     assert v.norm_primes("c'nl and f’c") == "c′nl and f′c"
     assert v.symbol_key("f'_{cE}") == v.symbol_key("f′cE") == v.symbol_key("f_prime_cE")
+
+
+def test_every_pass1_equation_must_be_answered():
+    c = clause("V d = 0.5 b w d f c", equations=[EQ])
+    issues = v.check_clause(extraction(parameters=params("V_d")), c, set()).issues
+    assert [i.code for i in issues] == ["equation_missing"] and v.needs_retry(issues)
+
+
+@pytest.mark.parametrize("sympy, ok", [("V_CE = 0.6*F_ye*A_w", True), ("Q_CE = 0.6*F_ye*A_w", True),
+                                       ("Q_CE = 0.5*F_ye*A_w", False)])
+def test_equality_chains_compare_their_last_expression_with_any_name_on_the_left(sympy, ok):
+    symbols = {"Q_CE": "Q_{CE}", "V_CE": "V_{CE}", "F_ye": "F_{ye}", "A_w": "A_w"}
+    e = EquationOut(equation_id=None, latex=r"Q_{CE} = V_{CE} = 0.6F_{ye}A_w", sympy=sympy,
+                    computes=sympy.split(" =")[0], uses=[], source_quote="")
+    assert (v.check_equation_latex(e, symbols, "t") is None) == ok
+
+
+def test_pi_next_to_a_number_is_a_product():
+    e = EquationOut(equation_id=None, latex=r"S_d = S_a g \frac{T^2}{4\pi^2}", sympy="S_d = S_a*g*T**2/(4*pi**2)",
+                    computes="S_d", uses=[], source_quote="")
+    assert v.check_equation_latex(e, {"S_d": "S_d", "S_a": "S_a", "g": "g", "T": "T"}, "t") is None
+    as_symbol = e.model_copy(update={"sympy": "S_d = S_a*g*T**2/(4*pi_ratio**2)"})
+    assert v.check_equation_latex(as_symbol, {"S_d": "S_d", "S_a": "S_a", "g": "g", "T": "T",
+                                              "pi_ratio": "pi"}, "t") is not None

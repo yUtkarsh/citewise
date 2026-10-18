@@ -44,6 +44,9 @@ class Pass2Options:
     dry_run: bool = False
     crop_mode: str = "always"
     max_cost: float | None = None  # USD
+    clause_ids: set[str] | None = None  # only these clauses
+    use_cache: bool = True  # False: ask Claude again for the selected jobs and replace their cached answers
+    save_images_dir: Path | None = None  # write the images each call sends (with dry_run: render only)
 
 
 class Sink(Protocol):
@@ -86,7 +89,8 @@ def _pages_of(clause: ClauseRec) -> set[int]:
 def select_clauses(skel: Skeleton2, opts: Pass2Options) -> list[ClauseRec]:
     out = [c for c in skel.clauses
            if (opts.pages is None or _pages_of(c) & opts.pages)
-           and (opts.chapters is None or skel.chapter(c) in opts.chapters)]
+           and (opts.chapters is None or skel.chapter(c) in opts.chapters)
+           and (opts.clause_ids is None or c.id in opts.clause_ids)]
     return out[:opts.limit] if opts.limit else out
 
 
@@ -236,7 +240,8 @@ async def run_pass2(doc: pymupdf.Document, pdf_hash: str, profile: Profile, skel
     runner = Runner(doc=doc, model_for=model_for, checks=lambda job: checker_for(job, notation), write=write,
                     state=state, costs=costs, transport=transport, concurrency=opts.concurrency,
                     fallbacks_for=lambda model: settings.server_fallback and "haiku" not in model,
-                    cache_dir=cache_dir, log=log, max_cost=opts.max_cost, estimate_cost=estimated_cost)
+                    cache_dir=cache_dir, log=log, max_cost=opts.max_cost, estimate_cost=estimated_cost,
+                    save_images_dir=opts.save_images_dir)  # use_cache: set per phase below
     # Claude Haiku 5.5 has no server-side fallback (Anthropic docs, Refusals and fallback).
 
     report: dict = {"crop_mode": opts.crop_mode, "schema": PASS2_SCHEMA_VERSION}
@@ -252,6 +257,10 @@ async def run_pass2(doc: pymupdf.Document, pdf_hash: str, profile: Profile, skel
         planned += [j for t in select_tables(skel, opts) for j in table_jobs(t, skel, notation)] \
             if "tables" in opts.jobs else []
         report["estimate"] = estimate(planned, model_for, cache_dir)
+        if opts.save_images_dir is not None:  # render what each planned call would send; nothing is sent
+            from app.ingest.pass2.runner import save_images
+            report["saved_images"] = {job.id: [str(p) for p in save_images(job, doc, opts.save_images_dir)]
+                                      for job in planned}
         report["note"] = "notation slices are empty in a dry run before the notation pages are cached"
         return report
 
@@ -305,7 +314,8 @@ async def run_pass2(doc: pymupdf.Document, pdf_hash: str, profile: Profile, skel
     lock = asyncio.Lock()
     for job in trivial:
         done.append(await runner.skip(job, lock))
-    first_reads = await runner.run(jobs)
+    runner.use_cache = opts.use_cache  # --no-cache covers the selected clause and table jobs only,
+    first_reads = await runner.run(jobs)  # never the notation and definitions they depend on
     done += first_reads
     # image-trust tables: an independent second read of every number the text layer cannot confirm
     second = [second_read_job(o.job, cells) for o in first_reads

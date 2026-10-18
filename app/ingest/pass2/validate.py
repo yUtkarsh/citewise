@@ -25,7 +25,7 @@ SEVERITY = {
     "uncertain_symbol_correction": "medium", "symbol_correction": "medium", "equation_structure": "medium",
     "source_quote": "low", "unmapped": "low", "reference_unknown": "low", "footnote_unknown": "low",
     "bad_id": "low", "refused": "high", "equation_mismatch": "high", "equation_latex": "medium",
-    "image_read": "low", "image_read_disagrees": "high",
+    "image_read": "low", "image_read_disagrees": "high", "equation_missing": "medium",
 }
 GRID_METHODS = {"docling", "find_tables"}  # grids whose cells are trusted for exact matching
 SHORT_EDIT_RAW, SHORT_EDIT_NEW = 2, 3  # character-level edit outside suspect text
@@ -191,7 +191,9 @@ def latex_for_parsing(latex: str) -> str:
     text = re.sub(r"\\(left|right|,|;|!|quad|qquad)", " ", text)
     text = text.replace("[", "(").replace("]", ")").replace(r"\lvert", "|").replace(r"\rvert", "|")
     text = re.sub(r"\\pm(?![A-Za-z])", "+", text)
-    text = re.sub(r"\\pi(?![A-Za-z])", " 3.141592653589793 ", text)
+    # π as a value, multiplied explicitly after a number or name ("4\pi^2" -> "4 \cdot (3.14…)^2")
+    text = re.sub(r"(?<=[0-9A-Za-z)}])\s*\\pi(?![A-Za-z])", r" \\cdot (3.141592653589793)", text)
+    text = re.sub(r"\\pi(?![A-Za-z])", "(3.141592653589793)", text)
     text = re.sub(r"\\(" + "|".join(UPPER_GREEK) + r")(?![A-Za-z])(?:_\{([^{}]*)\}|_([A-Za-z0-9]))?",
                   _upper_greek, text)
     text = re.sub(r"\\(mathrm|mathit|text)\{([^}]*)\}", r"\2", text)
@@ -208,7 +210,6 @@ def latex_for_parsing(latex: str) -> str:
             sub = "".join(DIGIT_WORDS[int(c)] if c.isdigit() else c for c in sub)
         return "_{" + sub + "}"
     text = re.sub(r"_\{([^{}]*)\}", spell, text)
-    text = first_relation(text)
     # products the parser does not see: after a bare d (it reads "d x" as a differential),
     # and after a closing parenthesis or absolute value ("(a-1)\frac{b}{c}", "|a|(R-1)")
     text = re.sub(r"\|([^|]*)\|", r"(|\1|)", text)
@@ -242,35 +243,51 @@ def _product_after_roots(text: str) -> str:
 RELATION_TOKEN = re.compile(r"\\(?:leq|le|geq|ge|lt|gt|neq|ne)(?![A-Za-z])|<=|>=|=|<|>")
 
 
-def first_relation(latex: str) -> str:
-    """'A = (…)^2 \\le 3.0' -> 'A = (…)^2': a chain keeps its first relation, the one
-    the SymPy form states."""
+def relation_texts(latex: str) -> list[str]:
+    """The single relations a LaTeX chain states, as the SymPy form may write them:
+    - 'A = expr' and 'A \\le expr' stay as they are;
+    - 'A = expr \\le 3.0' keeps its equation 'A = expr' (the limit is a separate statement);
+    - an equality chain 'Q = V = expr' gives 'Q = expr' and 'V = expr': its last expression,
+      with any name of the chain on the left.
+    Relations inside braces (\\sum_{i=1}) do not count."""
     def depth_at(i: int) -> int:
         return latex[:i].count("{") - latex[:i].count("}")
-    tokens = [t for t in RELATION_TOKEN.finditer(latex) if depth_at(t.start()) == 0]  # not inside \sum_{i=1}
-    return latex[:tokens[1].start()].rstrip() if len(tokens) > 1 else latex
+    tokens = [t for t in RELATION_TOKEN.finditer(latex) if depth_at(t.start()) == 0]
+    if len(tokens) < 2:
+        return [latex]
+    cuts = [0, *[p for t in tokens for p in (t.start(), t.end())], len(latex)]
+    segments = [latex[cuts[i]:cuts[i + 1]].strip() for i in range(0, len(cuts), 2)]
+    ops = [t.group(0) for t in tokens]
+    equals = next((i for i, op in enumerate(ops) if op != "="), len(ops))  # leading '=' operators
+    if equals == 0:
+        return [f"{segments[0]} {ops[0]} {segments[1]}"]
+    last = segments[equals]
+    return [f"{segments[i]} = {last}" for i in range(equals)]
 
 
 def parse_latex_relation(latex: str) -> list[tuple]:
-    """(lhs, rhs) readings of the LaTeX; the lark parser returns several when the LaTeX is
-    ambiguous (usually equal). Raises ValueError."""
+    """(lhs, rhs) readings of the LaTeX: one per relation a chain states, and several when
+    the lark parser finds the LaTeX ambiguous (usually equal). Raises ValueError."""
+    import warnings
+
     from sympy.core.relational import Relational
     from sympy.parsing.latex import parse_latex
 
-    import warnings
-
-    try:
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")  # SymPy deprecation notices from the lark transformer
-            expr = parse_latex(latex_for_parsing(latex), backend="lark")
-    except Exception as exc:  # the parser raises many exception types
-        raise ValueError(f"the LaTeX does not parse: {str(exc).splitlines()[0][:120]}") from exc
-    readings = getattr(expr, "children", None) if getattr(expr, "data", None) == "_ambig" else [expr]
-    relations = [r for r in readings or [] if isinstance(r, Relational)]
+    relations, errors = [], []
+    for text in relation_texts(latex_for_parsing(latex)):
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")  # SymPy deprecation notices from the lark transformer
+                expr = parse_latex(text, backend="lark")
+        except Exception as exc:  # the parser raises many exception types
+            errors.append(str(exc).splitlines()[0][:120])
+            continue
+        readings = getattr(expr, "children", None) if getattr(expr, "data", None) == "_ambig" else [expr]
+        relations += [r for r in readings or [] if isinstance(r, Relational)]
     if not relations:
-        raise ValueError("the LaTeX is not an equation or inequality")
-    unique = list(dict.fromkeys((r.lhs, r.rhs) for r in relations))
-    return unique
+        raise ValueError(f"the LaTeX does not parse: {errors[0]}" if errors else
+                         "the LaTeX is not an equation or inequality")
+    return list(dict.fromkeys((r.lhs, r.rhs) for r in relations))
 
 
 
@@ -571,6 +588,10 @@ def check_clause(result: ClauseExtraction, clause: ClauseRec, notation_ids: set[
                 issues.append(Issue("equation_letter_mismatch",
                                     f"equation {label}: the LaTeX letters do not match the text layer {raw[:80]!r}"))
 
+    answered = {eq.equation_id for eq in result.equations}
+    if missing := [e.id for e in clause.equations if e.id not in answered]:
+        issues.append(Issue("equation_missing", f"numbered equations missing from the answer: {', '.join(missing)}; "
+                                                f"give each one with its equation_id"))
     known_refs = {norm_text(r.text) for r in clause.references}
     issues += [Issue("reference_unknown", f"reference {r.text[:80]!r} is not in the references list", retry=False)
                for r in result.references if norm_text(r.text) not in known_refs]

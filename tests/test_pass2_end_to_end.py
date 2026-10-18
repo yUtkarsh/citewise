@@ -46,6 +46,14 @@ def fake_claude(seen: list):
                    "references": [], "symbol_corrections": [], "unmapped": []}
             if len(text) > 20:
                 out["conditions"] = [{"text": "applies", "source_quote": text[:20]}]
+            for eq in p["equations"]:  # every Pass 1 equation answered, as "L = 1" with a letter it prints
+                raw = eq["text_layer"]
+                letter = next((c for c in raw if c.isascii() and c.isalpha() and c not in "deiEI"), "x")
+                quote = raw[:8]
+                out["parameters"].append({"id": letter, "symbol": letter, "latex": letter, "description": "",
+                                          "units": None, "source_quote": quote})
+                out["equations"].append({"equation_id": eq["id"], "latex": f"{letter} = 1", "sympy": f"{letter} = 1",
+                                         "computes": letter, "uses": [], "source_quote": quote})
         else:
             rows = []
             for g in p["grid"]:
@@ -224,3 +232,11 @@ def test_re_extraction_removes_stale_children(fixture_doc, graph):
     write_clause(graph, outcome(1), set())
     assert conditions() == 1
     assert graph.ro_query("MATCH (c:Condition) RETURN count(c)").result_set[0][0] == 1
+
+
+def test_no_cache_never_asks_the_notation_pages_again(fixture_doc, tmp_path):
+    doc, profile, result = fixture_doc
+    run(doc, profile, result, tmp_path, "always")
+    _, _, seen = run(doc, profile, result, tmp_path, "always", use_cache=False, redo=True)
+    assert not [s for s in seen if s.output in (NotationPage, DefinitionsPage)]
+    assert [s for s in seen if s.output is ClauseExtraction]

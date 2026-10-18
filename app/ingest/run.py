@@ -31,6 +31,7 @@ from app.profile.schema import Profile
 REPORT_DIR = ROOT / "data" / "reports"
 CROPS_DIR = ROOT / "data" / "crops"
 JOBS_DIR = ROOT / "data" / "jobs"
+DEBUG_DIR = ROOT / "data" / "debug"  # git-ignored with the rest of data/
 
 
 def page_set(text: str | None) -> set[int] | None:
@@ -69,7 +70,10 @@ def run_pass2_cli(doc, pdf_hash: str, profile: Profile, name: str, args, log) ->
     opts = Pass2Options(jobs=jobs, pages=page_set(args.pages),
                         chapters=set(args.chapters.split(",")) if args.chapters else None, limit=args.limit,
                         concurrency=args.concurrency, redo=args.redo, dry_run=args.dry_run, crop_mode=crop_mode,
-                        max_cost=args.max_cost)
+                        max_cost=args.max_cost,
+                        clause_ids={c.strip() for c in args.clauses.split("|")} if args.clauses else None,
+                        use_cache=not args.no_cache,
+                        save_images_dir=DEBUG_DIR if args.save_sent_images else None)
     sink = None if args.dry_run else GraphSink(graph)
     report = asyncio.run(run_pass2(doc, pdf_hash, profile, skel, sink, opts,
                                    JOBS_DIR / f"{pdf_hash[:12]}_pass2.jsonl", log=log))
@@ -180,6 +184,10 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--dry-run", action="store_true", help="Pass 2: plan calls and estimate cost; send nothing")
     parser.add_argument("--clause-crops", choices=["always", "flagged"], help="Pass 2: override CLAUSE_CROPS")
     parser.add_argument("--max-cost", type=float, help="Pass 2: stop starting calls once estimated spend reaches this (USD)")
+    parser.add_argument("--clauses", help="Pass 2: only these clause ids, separated by '|' (ids may contain commas)")
+    parser.add_argument("--no-cache", action="store_true", help="Pass 2: ask again for the selected jobs, replacing cached answers")
+    parser.add_argument("--save-sent-images", action="store_true",
+                        help="Pass 2: write the images each call sends to data/debug/ (with --dry-run: render only)")
     args = parser.parse_args(argv)
 
     start = time.time()

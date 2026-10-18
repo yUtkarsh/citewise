@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 import json
 from pathlib import Path
 import random
+import re
 import threading
 import time
 from typing import Callable
@@ -166,8 +167,25 @@ class CostLog:
 
 # ---- running -------------------------------------------------------------------------------
 
-def content_blocks(job: Job, doc: pymupdf.Document) -> list[dict]:
-    """Each image follows a one-line label; the job text comes last."""
+def save_images(job: Job, doc: pymupdf.Document, out_dir: Path) -> list[Path]:
+    """Write the exact PNGs a job sends to ``out_dir/<job id>/`` (debugging; nothing is sent)."""
+    folder = out_dir / re.sub(r"[^A-Za-z0-9._-]+", "_", job.id)
+    folder.mkdir(parents=True, exist_ok=True)
+    paths = []
+    for n, ref in enumerate(job.images, 1):
+        with _RENDER_LOCK:
+            png = ref.png(doc)
+        path = folder / f"{n:02d}_{re.sub(r'[^A-Za-z0-9._-]+', '_', ref.label)}.png"
+        path.write_bytes(png)
+        paths.append(path)
+    return paths
+
+
+def content_blocks(job: Job, doc: pymupdf.Document, save_dir: Path | None = None) -> list[dict]:
+    """Each image follows a one-line label; the job text comes last. With ``save_dir`` the
+    PNGs sent are also written there."""
+    if save_dir is not None:
+        save_images(job, doc, save_dir)
     blocks = []
     for ref in job.images:
         blocks.append({"type": "text", "text": f"[image: {ref.label}]"})
@@ -216,6 +234,8 @@ class Runner:
     reserved: float = 0.0  # estimated cost of calls in flight
     stopped: bool = False  # the cost cap was reached
     not_run: list[str] = field(default_factory=list)
+    use_cache: bool = True
+    save_images_dir: Path | None = None  # write the images of every call sent (debugging)
 
     def spent(self) -> float:
         return sum(v.get("cost_usd", 0.0) for v in self.costs.kinds.values())
@@ -223,8 +243,8 @@ class Runner:
     def admit(self, job: Job, model: str) -> float | None:
         """The cost reserved for this job, or None when the cap leaves no room for it.
         Cached jobs are free and always run."""
-        if self.max_cost is None or is_cached(job.cache_text(), PASS2_SCHEMA_VERSION, self.prompt(job.prompt),
-                                              self.cache_dir):
+        if self.max_cost is None or (self.use_cache and is_cached(job.cache_text(), PASS2_SCHEMA_VERSION,
+                                                                  self.prompt(job.prompt), self.cache_dir)):
             return 0.0
         estimate = self.estimate_cost(job, model)
         if self.stopped or self.spent() + self.reserved + estimate > self.max_cost:
@@ -255,11 +275,13 @@ class Runner:
                     self.not_run.append(job.id)
                     return
                 spec = CallSpec(model=model, system=self.prompt(job.prompt).text,
-                                content=lambda: content_blocks(job, self.doc), output=job.output,
+                                content=lambda: content_blocks(job, self.doc, self.save_images_dir),
+                                output=job.output,
                                 max_tokens=job.max_tokens, effort=self.effort, fallbacks=self.fallbacks_for(model))
                 try:
                     call = await call_validated(spec, self.prompt(job.prompt), job.cache_text(),
-                                                PASS2_SCHEMA_VERSION, self.checks(job), send, self.cache_dir)
+                                                PASS2_SCHEMA_VERSION, self.checks(job), send, self.cache_dir,
+                                                self.use_cache)
                 except Exception as exc:  # a request that failed after every backoff attempt
                     self.log(f"{job.id}: request failed: {type(exc).__name__}: {exc}")
                     self.costs.kinds[job.kind]["failed"] += 1

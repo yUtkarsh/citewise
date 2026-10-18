@@ -228,6 +228,7 @@ async def call_validated(
     check: Checker,
     transport: AsyncTransport | None = None,
     cache_dir: Path = CACHE_DIR,
+    use_cache: bool = True,
 ) -> CallResult:
     """Claude's answer for one Pass 2 job: parsed, checked, retried once with the issues
     that ask for a retry, and cached (flagged results too, so a resume never pays twice).
@@ -236,7 +237,7 @@ async def call_validated(
     path = cache_path(cache_key(cache_text, schema_version, prompt), prompt, cache_dir)
     usages, raw, output, issues, error, refused = [], None, None, [], None, False
     first, prior = 1, []  # prior: usages of a cached first attempt (already paid for)
-    if path.is_file():
+    if use_cache and path.is_file():  # use_cache=False asks again and replaces the cached answer
         record = json.loads(path.read_text(encoding="utf-8"))
         output, issues, error = _parse_and_check(record["raw"], spec.output, check)
         attempts = record.get("attempts", 1)
