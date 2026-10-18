@@ -1,7 +1,8 @@
 """Re-run the current table checks on the stored table answers. Sends no API calls.
 
-For each table job, the answer in use is the pinned one (``data/jobs/<hash>_pass2_pins``)
-or, without a pin, the cached one. Prints the tables whose answer now fails a check
+For each table job, the answer in use is the pinned one (``data/jobs/<hash>_pass2_pins``),
+or without a pin the cached one, or without either (single-part tables) the rows the
+graph holds. Prints the tables whose answer now fails a check
 that asks for a retry, grouped by reason, and writes a JSON report.
 
     python -m scripts.recheck_tables data/fema356.pdf [--reason value_column] [--flag-graph]
@@ -24,7 +25,7 @@ import pymupdf
 from app.config import ROOT
 from app.graph.connection import get_db
 from app.graph.schema import graph_name
-from app.ingest.pass2.jobs import page_job, table_jobs
+from app.ingest.pass2.jobs import page_job, row_bands, table_jobs
 from app.ingest.pass2.records import from_graph
 from app.ingest.pass2.run_pass2 import merge_notation, range_pages
 from app.ingest.pass2.runner import JobState, Runner
@@ -83,6 +84,30 @@ def flag_stray_columns(graph) -> list[str]:
     return flagged
 
 
+def answer_from_graph(graph, table) -> TableExtraction | None:
+    """The answer the graph holds for a table (for jobs whose stored answer is gone)."""
+    import json as _json
+
+    from app.ingest.pass2.schemas import BlankCell, CellValue, HeaderParameter, RowOut
+
+    gives = graph.ro_query("MATCH (:Table {id: $id})-[e:GIVES]->(p:Parameter) "
+                           "RETURN p.id, coalesce(e.cols, [e.col]), e.header_text, e.units", {"id": table.id}).result_set
+    rows = graph.ro_query("MATCH (:Table {id: $id})-[:HAS_ROW]->(r:Row) WHERE r.values IS NOT NULL "
+                          "RETURN r.id, r.conditions, r.values, r.blank_cells", {"id": table.id}).result_set
+    if not rows:
+        return None
+    headers = [HeaderParameter(col=c, parameter_id=p, header_text=h or p, units=u)
+               for p, cols, h, u in gives for c in cols if c is not None]
+    out, blanks = [], []
+    for rid, conds, values, blank in rows:
+        index = int(rid.rsplit("#r", 1)[1])
+        vals = [CellValue(col=x["col"], value=x.get("value") or "", number=x.get("number"), unit=x.get("unit"),
+                          formula=x.get("formula")) for x in _json.loads(values or "[]")]
+        out.append(RowOut(row=index, conditions=_json.loads(conds or "[]"), values=vals))
+        blanks += [BlankCell(**b) for b in _json.loads(blank or "[]")]
+    return TableExtraction(header_parameters=headers, rows=out, footnote_rules=[], blank_cells=blanks)
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("pdf", type=Path)
@@ -101,17 +126,23 @@ def main(argv: list[str]) -> int:
     pins_dir = JOBS_DIR / f"{pdf_hash[:12]}_pass2_pins"
 
     failing, sources, reasons = {}, Counter(), Counter()
+    graph = get_db().select_graph(name)
     for table in skel.tables:
-        for job in table_jobs(table, skel, notation):
+        jobs = table_jobs(table, skel, notation)
+        for job in jobs:
             raw, source = stored_raw(job, pins_dir)
-            sources[source] += 1
-            if not raw:
+            out = None
+            if raw:
+                try:
+                    out = TableExtraction.model_validate_json(raw)
+                except Exception:
+                    out = None
+            if out is None and len(jobs) == 1:  # no stored answer: check what the graph holds
+                out, source = answer_from_graph(graph, table), "graph"
+            sources[source if out is not None else "none"] += 1
+            if out is None:
                 continue
-            try:
-                out = TableExtraction.model_validate_json(raw)
-            except Exception:
-                continue
-            issues = [i for i in v.check_table(out, job.table, job.rows)
+            issues = [i for i in v.check_table(out, job.table, job.rows, row_bands(doc, job.rows))
                       if i.retry and (not args.reason or i.code == args.reason)]
             if issues:
                 failing[job.id] = {"source": source, "issues": [i.as_dict() for i in issues]}

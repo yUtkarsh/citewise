@@ -2,7 +2,9 @@
 clause) to the ordered steps that lead to it, dependencies first.
 
 What counts as a dependency, by node kind:
-- a parameter depends on the equations that compute it and the tables that give it;
+- a parameter depends on the equations that compute it, the tables that give it, and the
+  clauses that define it (up to MAX_DEFINING, nearest the goal's page first; listed as
+  steps, not expanded);
 - an equation depends on its inputs;
 - a table depends on the clause that contains it (it governs how the table is used), or
   without one, on the clauses that require its values;
@@ -28,7 +30,8 @@ from app.agent.results import ToolResult, Touched, edge_label, node_label
 from app.agent.search import find_entry
 
 MAX_DEPTH = 4
-MAX_NODES = 45
+MAX_NODES = 60
+MAX_DEFINING = 3  # defining clauses per parameter
 STEP_LABELS = ("Clause", "Table", "Equation")
 DEP_TYPES = ["requires", "uses_value_from"]
 DECISION_TYPES = ["alternative_to", "exception_to"]
@@ -51,6 +54,11 @@ DEPENDS_ON = {
         "RETURN labels(x)[0], x, n.id, 'REFERENCES', x.id, e",
     ],
 }
+_COLS = "AS label, x AS node, {src} AS src, '{kind}' AS kind, {dst} AS dst, e AS edge"
+DEFINING = (f"MATCH (n:Parameter {{id: $id}})-[e:DEFINED_IN]->(x:Clause) RETURN 'Clause' "
+            + _COLS.format(src="n.id", kind="DEFINED_IN", dst="x.id")
+            + f" UNION MATCH (x:Clause)-[e:DEFINES]->(n:Parameter {{id: $id}}) RETURN 'Clause' "
+            + _COLS.format(src="x.id", kind="DEFINES", dst="n.id"))
 # Walked from a clause, but the dependency points back: the clause comes first.
 CONTAINED_TABLES = "MATCH (n:Clause {id: $id})-[e:CONTAINS]->(x:Table) RETURN 'Table', x, n.id, 'CONTAINS', x.id, e"
 TABLE_FALLBACK = ("MATCH (x:Clause)-[e:REFERENCES]->(n:Table {id: $id}) WHERE e.type IN $types "
@@ -85,10 +93,24 @@ def walk(graph, start: tuple[str, str], t: Touched, labels: list):
     frontier = [(start, 0)]
     nodes[start] = find_node(graph, start[1])[1]
     subtree = {start[1]} if start[0] == "Clause" else set()  # the goal clause and its sub-clauses
+    leaves: set[tuple[str, str]] = set()  # defining clauses: steps, not expanded
+    root_page = nodes[start].get("page") or 0
     while frontier and len(nodes) < MAX_NODES:
         (label, nid), level = frontier.pop(0)
-        if level >= MAX_DEPTH or (label == "Clause" and nid not in subtree and (nodes[(label, nid)].get("depth") or 9) <= 1):
+        if level >= MAX_DEPTH or (label, nid) in leaves or \
+                (label == "Clause" and nid not in subtree and (nodes[(label, nid)].get("depth") or 9) <= 1):
             continue
+        if label == "Parameter":
+            defining = graph.ro_query(DEFINING, {"id": nid}).result_set
+            defining.sort(key=lambda r: (r[3] != "DEFINED_IN", abs((r[1].properties.get("page") or 0) - root_page)))
+            for x_label, x, src, kind, dst, e in defining[:MAX_DEFINING]:
+                key = (x_label, x.properties.get("id"))
+                t.edge(src, kind, dst)
+                deps[(label, nid)].add(key)
+                if key not in nodes and len(nodes) < MAX_NODES:
+                    nodes[key] = x.properties
+                    t.node(*key)
+                    leaves.add(key)
         queries = [(q, False) for q in DEPENDS_ON.get(label, [])]
         if label == "Clause":
             queries.append((CONTAINED_TABLES, True))
@@ -177,9 +199,13 @@ def plan_procedure(graph, goal: str, facts: dict[str, Fact], encode=None) -> Too
     number = {k: i + 1 for i, k in enumerate(ordered)}
 
     sources = defaultdict(list)  # parameter -> steps that compute or give it
+    defines = defaultdict(list)  # clause -> parameters it defines
     for key, ds in deps.items():
         if key[0] == "Parameter":
-            sources[key[1]] += [d for d in ds if d[0] in STEP_LABELS]
+            sources[key[1]] += [d for d in ds if d[0] in ("Equation", "Table")]
+            for d in ds:
+                if d[0] == "Clause":
+                    defines[d].append(key[1])
     steps, decisions = [], []
     for key in ordered:
         label, nid = key
@@ -196,9 +222,12 @@ def plan_procedure(graph, goal: str, facts: dict[str, Fact], encode=None) -> Too
                 if d[0] != "Parameter":
                     continue
                 fact = facts.get(d[1])
+                defined = sorted(number[c] for c in deps.get(d, ()) if c[0] == "Clause" and c in number)
                 inputs.append({"id": d[1], "description": (nodes[d].get("description") or "")[:100],
                                "known": fact is not None, **({"value": fact.value, "unit": fact.unit} if fact else {}),
-                               "from_steps": sorted(number[s] for s in sources.get(d[1], []) if s in number)})
+                               "from_steps": sorted(number[s] for s in sources.get(d[1], []) if s in number
+                                                    and s[0] != "Clause"),
+                               "defined_in_steps": defined})
             step["inputs"] = inputs
         elif label == "Table":
             choice = table_choices(graph, nid)
@@ -210,6 +239,8 @@ def plan_procedure(graph, goal: str, facts: dict[str, Fact], encode=None) -> Too
                 decisions.append({"kind": "row", "at": nid, "options": choice["row_groups"],
                                   "why": "the row is matched to the component's description"})
         elif label == "Clause":
+            if defines.get(key):
+                step["defines"] = sorted(defines[key])
             for xid, kind, text, title in graph.ro_query(ALTERNATIVES, {"id": nid, "types": DECISION_TYPES}).result_set:
                 t.node("Clause", xid)
                 t.edge(nid, "REFERENCES", xid)

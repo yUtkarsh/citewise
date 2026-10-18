@@ -95,6 +95,20 @@ def test_a_changed_row_shows_in_the_change_line(code_graph):
     assert "a 0.02 → 0.015" in turn.change_line and "path changed: now uses Table 1-1#r2" in turn.change_line
 
 
+def test_a_compute_repeated_after_missing_inputs_is_one_step_in_the_change_line(code_graph):
+    script = Script(
+        [tool("compute", 1, target="Equation 1-1")],  # missing inputs
+        [tool("save_session_facts", 2, facts=[{"id": "C", "value": 0.25, "source": "user"},
+                                               {"id": "W", "value": 800, "unit": "kips", "source": "user"}]),
+         tool("compute", 3, target="Equation 1-1")],
+        [text("V = 200 kips.")],
+        *whatif_turn(10, 900))
+    a = Agent(Toolbox(code_graph, MemoryFacts()), transport=script, model="claude-sonnet-5-5")
+    a.ask("Base shear?")
+    line = a.ask("What if W is 900 kips?").change_line
+    assert line == "Changed: W 800 → 900 kips. V 200 → 225 kips; same path (Equation 1-1)."
+
+
 def test_a_value_corrected_within_one_turn_is_not_a_what_if(code_graph):
     script = Script(*calc_turn(1),
                     [tool("save_session_facts", 5, facts=[{"id": "k", "value": 1, "source": "user"}]),

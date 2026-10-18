@@ -10,7 +10,8 @@ from dataclasses import dataclass, field
 import json
 
 UNREVIEWED, INFERRED, ASSUMED = "unreviewed", "inferred", "assumed"
-DROP_KEYS = {"embedding", "embed_hash", "embed_model", "raw_spans", "regions", "suspect_spans", "alias_text"}
+DROP_KEYS = {"embedding", "embed_hash", "embed_model", "raw_spans", "regions", "suspect_spans", "alias_text",
+             "review_status", "schema_version", "extraction_schema"}
 TEXT_CHARS = 1500  # long text properties are cut in tool results
 
 
@@ -84,9 +85,15 @@ def flag_reasons(flags) -> str:
 
 
 def clean(props: dict) -> dict:
-    """Node properties fit for a tool result: no vectors or layout internals, long text cut."""
+    """Node properties fit for a tool result: no vectors or layout internals, long text cut.
+    No review status: nothing is reviewed yet, so it would read as a label on every node;
+    a node is either ``flagged: true`` (its labels say why) or carries no status."""
     out = {}
     for key, value in props.items():
+        if key == "status":
+            if value == "flagged":
+                out["flagged"] = True
+            continue
         if key in DROP_KEYS or value is None:
             continue
         if isinstance(value, str) and len(value) > TEXT_CHARS:

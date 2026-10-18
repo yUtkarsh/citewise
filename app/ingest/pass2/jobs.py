@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import json
+import re
 
 import pymupdf
 from pydantic import BaseModel
@@ -152,6 +153,35 @@ def table_jobs(table: TableRec, skel: Skeleton2, notation: NotationDict) -> list
                         output=TableExtraction, text=_dump(payload), images=images, max_tokens=32000,
                         table=table, rows=rows))
     return jobs
+
+
+PLAIN_NUMBER = re.compile(r"^[-−]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?$|^[-−]?\.\d+$")
+
+
+def row_bands(doc: pymupdf.Document, rows: list[RowRec]) -> dict[int, list[str]]:
+    """For each body row: the plain numbers of the page's text layer inside the table's
+    width on that page (the union of its rows' boxes) and the row's height. A word goes
+    to the smallest row box that holds its vertical centre, so a tall row (merged label
+    cells) does not take the next row's numbers."""
+    width: dict[int, tuple[float, float]] = {}
+    for r in rows:
+        x0, x1 = width.get(r.page, (r.bbox[0], r.bbox[2]))
+        width[r.page] = (min(x0, r.bbox[0]), max(x1, r.bbox[2]))
+    out: dict[int, list[str]] = {r.index: [] for r in rows if not r.is_header}
+    tol = 1.0
+    for page in width:
+        x0, x1 = width[page]
+        on_page = [r for r in rows if r.page == page]
+        for w in doc[page - 1].get_text("words"):
+            if not (w[0] >= x0 - tol and w[2] <= x1 + tol) or not PLAIN_NUMBER.match(w[4]):
+                continue
+            mid = (w[1] + w[3]) / 2
+            holders = [r for r in on_page if r.bbox[1] - tol <= mid <= r.bbox[3] + tol]
+            if holders:
+                row = min(holders, key=lambda r: r.bbox[3] - r.bbox[1])
+                if not row.is_header:
+                    out[row.index].append(w[4])
+    return out
 
 
 def second_read_job(first: Job, cells: list[tuple[int, int, float, str]]) -> Job:

@@ -117,7 +117,7 @@ def range_pages(profile: Profile, kind: str) -> list[int]:
 
 # ---- checks ------------------------------------------------------------------------------
 
-def checker_for(job: Job, notation: NotationDict):
+def checker_for(job: Job, notation: NotationDict, doc: pymupdf.Document | None = None):
     if job.kind == "notation":
         return lambda out: v.check_notation(out, job.page_text)
     if job.kind == "definitions":
@@ -127,7 +127,14 @@ def checker_for(job: Job, notation: NotationDict):
         return lambda out: v.check_clause(out, job.clause, ids, latex).issues
     if job.kind == "table_cells":
         return lambda out: v.check_second_read(out, job.cells)
-    return lambda out: v.check_table(out, job.table, job.rows)
+    bands = {}
+    if doc is not None:
+        from app.ingest.pass2.jobs import row_bands
+        from app.ingest.pass2.runner import _RENDER_LOCK
+
+        with _RENDER_LOCK:  # PyMuPDF documents are not thread-safe
+            bands = row_bands(doc, job.rows)
+    return lambda out: v.check_table(out, job.table, job.rows, bands)
 
 
 # ---- notation and definitions merging ------------------------------------------------------
@@ -242,7 +249,7 @@ async def run_pass2(doc: pymupdf.Document, pdf_hash: str, profile: Profile, skel
     def write(outcome: Outcome) -> None:
         sink.result(outcome, current["notation_ids"])
 
-    runner = Runner(doc=doc, model_for=model_for, checks=lambda job: checker_for(job, notation), write=write,
+    runner = Runner(doc=doc, model_for=model_for, checks=lambda job: checker_for(job, notation, doc), write=write,
                     state=state, costs=costs, transport=transport, concurrency=opts.concurrency,
                     fallbacks_for=lambda model: settings.server_fallback and "haiku" not in model,
                     cache_dir=cache_dir, log=log, max_cost=opts.max_cost, estimate_cost=estimated_cost,

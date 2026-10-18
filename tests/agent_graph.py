@@ -70,6 +70,8 @@ def build(g) -> None:
           "type: 'requires'}]->(b)")
     _q(g, "MATCH (a:Clause {id: '1.2'}), (b:Clause {id: '1.3'}) CREATE (a)-[:REFERENCES {text: 'Section 1.3', "
           "type: 'alternative_to'}]->(b)")
+    _q(g, "MATCH (a:Clause {id: '1.2'}), (b:Clause {id: '1.3'}) CREATE (a)-[:REFERENCES {text: 'link to p11'}]->(b)")
+    _q(g, "MATCH (a:Clause {id: '1.3'}), (b:Clause {id: '1'}) CREATE (a)-[:REFERENCES {text: 'link to p9'}]->(b)")
     _q(g, "MATCH (a:Clause {id: '1.3'}), (e:Equation {id: 'Equation 1-2'}) CREATE (a)-[:REFERENCES "
           "{text: 'Equation 1-2', type: 'requires'}]->(e)")
 

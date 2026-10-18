@@ -7,6 +7,8 @@ results, for example:
 """
 from __future__ import annotations
 
+import json
+
 from app.agent.compute import fmt
 from app.agent.facts import Fact
 from app.agent.results import ToolResult, Touched
@@ -89,10 +91,23 @@ def change_line(changes, old_out, new_out, old_path, new_path) -> str:
         f"; {path}."
 
 
+def _call_key(name: str, args: dict) -> tuple:
+    if name == "compute":
+        return name, args.get("target"), args.get("row_id"), args.get("solve_for")
+    return name, json.dumps(args, sort_keys=True, default=str)
+
+
+def dedupe(calls: list[tuple[str, dict, ToolResult]]) -> list[tuple[str, dict, ToolResult]]:
+    """The last call per target: a compute that first reported missing inputs and then
+    ran is one step of the path, not two."""
+    last = {_call_key(n, a): i for i, (n, a, _) in enumerate(calls)}
+    return [c for i, c in enumerate(calls) if last[_call_key(c[0], c[1])] == i]
+
+
 def replay(toolbox, last_calls: list[tuple[str, dict, ToolResult]], changes) -> ToolResult | None:
     """Re-run the replayable calls of the last answer with the current facts. None when
     the last answer used no replayable tool."""
-    calls = [(n, a, r) for n, a, r in last_calls if n in REPLAYABLE]
+    calls = dedupe([(n, a, r) for n, a, r in last_calls if n in REPLAYABLE])
     if not calls:
         return None
     new_results = [toolbox._run(n, a) for n, a, _ in calls]

@@ -41,9 +41,11 @@ TOOLS: list[dict] = [
                     "(applies / does not apply / undetermined).",
      "input_schema": _obj({"scope": {"type": "string", "description": "Clause id"}}, ["scope"])},
     {"name": "get_clause",
-     "description": "A clause's text, page, references (typed), equations with crops, tables, conditions, "
-                    "requirements, exceptions, commentary and review status.",
-     "input_schema": _obj({"id": {"type": "string", "description": "Clause id"}}, ["id"])},
+     "description": "A clause's text, page, references (typed; 'pdf link' for hyperlinks in the PDF), "
+                    "equations with crops, tables, conditions, requirements, exceptions and commentary. "
+                    "For a table id: its value columns, condition columns, each row's conditions, footnotes "
+                    "and governing clause, but not its values (those come from compute).",
+     "input_schema": _obj({"id": {"type": "string", "description": "Clause or table id"}}, ["id"])},
     {"name": "compute",
      "description": "The only way to get a number. Equation target: evaluates its SymPy form with the session "
                     "facts (save inputs first); reports missing inputs; refuses equations flagged high. Table "

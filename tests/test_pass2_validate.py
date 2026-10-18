@@ -263,7 +263,8 @@ def test_text_line_grid_numbers_need_only_appear_in_the_row_band():
     assert not v.check_table(ok, t, t.rows)
     other_row = result([RowOut(row=1, conditions=[], values=[value(0, 1.5)]),
                         RowOut(row=2, conditions=[], values=[value(0, 7.5)])])
-    assert codes(v.check_table(other_row, t, t.rows)) == ["table_number_mismatch"]
+    # row 2's wrong number is retried for it; row 1 left out the 2,000 printed on it
+    assert codes(v.check_table(other_row, t, t.rows)) == ["table_number_mismatch", "value_missing"]
 
 
 def test_header_cells_are_exempt_and_header_rows_are_not_body_rows():
@@ -298,7 +299,7 @@ def test_wordy_cell_under_a_numeric_header_is_a_value():
 def test_missing_rows_and_columns_are_errors_that_retry():
     t = table("docling", GRID)
     r = result([RowOut(row=1, conditions=[], values=[value(5, 1.5)])], headers=[])
-    assert codes(v.check_table(r, t, t.rows)) == ["grid_dimension", "row_missing", "value_column"]
+    assert codes(v.check_table(r, t, t.rows)) == ["grid_dimension", "row_missing", "value_column", "value_missing"]
 
 
 def test_blank_cells_are_flagged_and_must_be_blank():
@@ -315,7 +316,8 @@ def test_blank_cells_are_flagged_and_must_be_blank():
 def test_footnote_markers_must_be_markers_pass1_found_or_retry():
     t = table("docling", GRID)
     t.rows[1].markers = ["b"]  # a marker Pass 1 saw inside a row counts too
-    rows = [RowOut(row=1, conditions=[], values=[value(1, 1.5)]), RowOut(row=2, conditions=[], values=[])]
+    rows = [RowOut(row=1, conditions=[], values=[value(1, 1.5), value(2, 2000, "2,000")]),
+            RowOut(row=2, conditions=[], values=[value(2, -0.25)])]
     rule = FootnoteRule(marker="line c", kind="note", rule="x", applies_to_rows=[1], applies_to_cols=[])
     issues = v.check_table(result(rows, rules=[rule]), t, t.rows)
     assert codes(issues) == ["footnote_unknown"] and v.needs_retry(issues)
@@ -446,3 +448,49 @@ def test_a_caption_repeated_in_the_grid_is_not_a_body_row():
     t = table("docling", [["Type", "m-factor", "Limit"], ["Table 1 Values 2"], ["Flexible", "1.5", "2,000"]])
     r = result([RowOut(row=2, conditions=[], values=[value(1, 1.5), value(2, 2000)])])
     assert "row_missing" not in codes(v.check_table(r, t, t.rows))
+
+
+def test_every_number_in_a_grid_row_must_be_in_the_answer_for_that_row():
+    t = table("docling", [["Type", "Ratio", "a", "b"], ["Flexible", "≤ 3", "1.5", "2,000"]])
+    whole = RowOut(row=1, conditions=["Flexible", "Ratio ≤ 3"], values=[value(2, 1.5), value(3, 2000, "2,000")])
+    assert "value_missing" not in codes(v.check_table(result([whole]), t, t.rows))  # '≤ 3' is a condition
+    short = RowOut(row=1, conditions=["Flexible", "Ratio ≤ 3"], values=[value(2, 1.5)])
+    issues = [i for i in v.check_table(result([short]), t, t.rows) if i.code == "value_missing"]
+    assert issues and issues[0].retry and "2,000" in issues[0].detail
+
+
+def test_footnote_digits_on_labels_are_not_missing_values():
+    t = table("docling", [["Type", "a"], ["All walls2", "0.75"]])
+    r = RowOut(row=1, conditions=["All walls"], values=[value(1, 0.75)])
+    assert "value_missing" not in codes(v.check_table(result([r]), t, t.rows))
+
+
+def test_a_value_the_grid_lost_is_found_in_the_rows_text_band():
+    t = table("docling", [["Type", "a", "b"], ["All walls2", "0.75", "2.0"]])
+    r = RowOut(row=1, conditions=["All walls"], values=[value(1, 0.75), value(2, 2.0)])
+    band = {1: ["All", "walls2", "0.75", "2.0", "1.5"]}  # '1.5' sits right of the grid's last column
+    issues = [i for i in v.check_table(result([r]), t, t.rows, band) if i.code == "value_missing"]
+    assert issues and "1.5" in issues[0].detail
+    assert "value_missing" not in codes(v.check_table(result([r]), t, t.rows, {1: ["All", "walls2", "0.75", "2.0"]}))
+
+
+def test_comparisons_and_list_numbers_in_a_row_are_not_values():
+    t = table("docling", [["Item", "Limit", "a"], ["1.", "β ≥ 1.3", "0.5"]])
+    r = RowOut(row=1, conditions=["first item"], values=[value(2, 0.5)])
+    assert "value_missing" not in codes(v.check_table(result([r]), t, t.rows))
+
+
+def test_a_value_past_the_grid_is_accepted_only_when_the_row_prints_it():
+    t = table("docling", [["Type", "a", "b"], ["All walls2", "0.75", "2.0"]])
+    lost = RowOut(row=1, conditions=["All walls"], values=[value(1, 0.75), value(2, 2.0), value(3, 1.5)])
+    headers = [HeaderParameter(col=c, parameter_id=p, header_text=p, units=None) for c, p in ((1, "a"), (2, "b"), (3, "c"))]
+    band = {1: ["0.75", "2.0", "1.5"]}
+    assert not v.check_table(result([lost], headers=headers), t, t.rows, band)
+    assert "grid_dimension" in codes(v.check_table(result([lost], headers=headers), t, t.rows, {1: ["0.75", "2.0"]}))
+
+
+def test_a_footnote_marker_printed_as_a_word_is_not_a_missing_value():
+    t = table("docling", [["Type", "a"], ["Shear", "0.003"]])
+    t.footnotes = [("5", "Columns controlled by shear.")]
+    r = RowOut(row=1, conditions=["Shear"], values=[value(1, 0.003)])
+    assert "value_missing" not in codes(v.check_table(result([r]), t, t.rows, {1: ["5", "0.003"]}))

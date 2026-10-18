@@ -42,3 +42,17 @@ def test_decisions_are_found_in_the_graph(code_graph):
 def test_a_phrase_goal_is_resolved_with_find_entry(code_graph):
     r = plan_procedure(code_graph, "story force", {})
     assert r.data["goal"]["id"] in {"1.3", "F", "Equation 1-2"}
+
+
+def test_equation_inputs_bring_the_clauses_that_define_them(code_graph):
+    code_graph.query("MATCH (p:Parameter {id: 'k'}), (c:Clause {id: '1'}) MERGE (p)-[:DEFINED_IN]->(c)")
+    try:
+        r = plan_procedure(code_graph, "Equation 1-2", {})
+        order = steps(r)
+        assert "1" in order and order.index("1") < order.index("Equation 1-2")
+        eq2 = next(s for s in r.data["steps"] if s["id"] == "Equation 1-2")
+        k = next(i for i in eq2["inputs"] if i["id"] == "k")
+        assert k["defined_in_steps"] == [order.index("1") + 1] and not k["from_steps"]
+        assert next(s for s in r.data["steps"] if s["id"] == "1")["defines"] == ["k"]
+    finally:
+        code_graph.query("MATCH (:Parameter {id: 'k'})-[e:DEFINED_IN]->() DELETE e")

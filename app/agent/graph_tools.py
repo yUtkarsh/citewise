@@ -118,7 +118,49 @@ def get_dependencies(graph, node_id: str, direction: str = "upstream", depth: in
     return ToolResult(summary, {"start": _brief(*start), "direction": direction, "nodes": found}, t, labels)
 
 
+def get_table(graph, table_id: str) -> ToolResult:
+    """A table's columns, row conditions and footnotes, without its values: numbers come
+    from compute, which matches the row and maps the columns."""
+    from app.agent.compute import _load_table, condition_params, table_headers
+
+    table, rows, notes = _load_table(graph, table_id)
+    if table is None:
+        return ToolResult(f"no table {table_id!r}; use find_entry first", {"id": table_id}, error=True)
+    headers = table_headers(graph, table_id)
+    conditions = condition_params(rows, headers)
+    t, labels = Touched(), []
+    t.node("Table", table_id)
+    if (lab := node_label(table, "Table")) is not None:
+        labels.append(lab)
+    for r in rows:
+        t.node("Row", r["id"])
+        t.edge(table_id, "HAS_ROW", r["id"])
+    for n in notes:
+        t.node("Footnote", n.get("id"))
+        t.edge(table_id, "HAS_FOOTNOTE", n.get("id"))
+    governing = graph.ro_query("MATCH (c:Clause)-[:CONTAINS]->(:Table {id: $id}) RETURN c.id, c.title",
+                               {"id": table_id}).result_set
+    for cid, _ in governing:
+        t.node("Clause", cid)
+        t.edge(cid, "CONTAINS", table_id)
+    data = {"id": table_id, "caption": table.get("caption"), "pages": table.get("pages") or [table.get("page")],
+            **({"flagged": True} if table.get("status") == "flagged" else {}),
+            "value_columns": [{"id": h.id, "header": h.header_text, "cols": h.cols, "units": h.units}
+                              for h in headers if h.id not in conditions],
+            "condition_columns": sorted(conditions),
+            "rows": [{"row": r["id"], "conditions": r["_conditions"]} for r in rows],
+            "footnotes": [{"marker": n.get("marker"), "text": n.get("text"), "kind": n.get("rule_kind"),
+                           "rule": n.get("rule"), "applies_to_rows": n.get("applies_to_rows")} for n in notes],
+            "governing_clauses": [{"id": i, "title": tt} for i, tt in governing],
+            "values": "not shown here: call compute with this table id, the row_id you matched and your reason"}
+    summary = f"{table_id}: {len(rows)} rows, {len(data['value_columns'])} value columns, {len(notes)} footnotes"
+    return ToolResult(summary, data, t, labels)
+
+
 def get_clause(graph, clause_id: str) -> ToolResult:
+    found = find_node(graph, clause_id)
+    if found and found[0] in ("Table", "Row"):
+        return get_table(graph, clause_id.split("#r")[0])
     rows = graph.ro_query("MATCH (c:Clause {id: $id}) RETURN c", {"id": clause_id}).result_set
     if not rows:
         return ToolResult(f"no clause {clause_id!r}; use find_entry first", {"id": clause_id}, error=True)
@@ -141,13 +183,19 @@ def get_clause(graph, clause_id: str) -> ToolResult:
     for pid, _ in parent:
         t.node("Clause", pid)
         t.edge(clause_id, "PART_OF", pid)
-    references = []
-    for label, xid, text, kind, title in refs:
-        if label == "Clause" and (text or "").startswith("link to p"):
-            continue  # an internal PDF link, not a reference the code states
+    references, seen = [], set()
+    links = [r for r in refs if (r[2] or "").startswith("link to p")]
+    for label, xid, text, kind, title in [r for r in refs if r not in links] + links:
+        is_link = (text or "").startswith("link to p")
+        if is_link and xid in seen:
+            continue  # a PDF link to a target the text already references
+        seen.add(xid)
         t.node(label, xid)
         t.edge(clause_id, "REFERENCES", xid)
-        references.append({"label": label, "id": xid, "text": text, "type": kind, "title": title})
+        ref = {"label": label, "id": xid, "text": text, "type": kind, "title": title}
+        if is_link:
+            ref["kind"] = "pdf link"  # a hyperlink in the PDF at the reference, not typed by Pass 2
+        references.append(ref)
     for eid, *_ in eqs:
         t.node("Equation", eid)
         t.edge(clause_id, "CONTAINS", eid)
@@ -156,12 +204,13 @@ def get_clause(graph, clause_id: str) -> ToolResult:
         t.edge(clause_id, "CONTAINS", tid)
     text = c.get("text_corrected") or c.get("text")
     data = {"id": clause_id, "title": c.get("title"), "page": c.get("page"), "page_end": c.get("page_end"),
-            "bbox": c.get("bbox"), "status": c.get("status"), "review_status": c.get("review_status"),
+            "bbox": c.get("bbox"), "status": c.get("status"),
             "text": text, "text_is_corrected": bool(c.get("text_corrected")),
             "parent": [{"id": i, "title": tt} for i, tt in parent],
             "children": [{"id": i, "title": tt} for i, tt in children][:30],
             "references": references[:40],
-            "equations": [{"id": i, "latex": la, "crop": cr, "page": pg, "status": st} for i, la, cr, pg, st in eqs],
+            "equations": [{"id": i, "latex": la, "crop": cr, "page": pg, **({"flagged": True} if st == "flagged" else {})}
+                          for i, la, cr, pg, st in eqs],
             "tables": [{"id": i, "caption": cap, "page": pg} for i, cap, pg in tables],
             "commentary": [r[0] for r in commentary], **{k: v[:15] for k, v in parts.items()}}
     summary = f"{clause_id} {c.get('title') or ''} (p. {c.get('page')}): {len(references)} references, " \
@@ -236,11 +285,23 @@ def trace(graph, items: list[dict]) -> ToolResult:
                       list({(x.target, x.label): x for x in labels}.values()))
 
 
+HIDDEN = "hidden: table values come from compute (table id, row_id, reason)"
+ROW_VALUE_KEYS = ("values", "cells", "blank_cells")
+
+
+def _hide_row_values(props: dict) -> dict:
+    return {k: (HIDDEN if k in ROW_VALUE_KEYS else v) for k, v in props.items()}
+
+
 def _serialize(value, t: Touched):
     if hasattr(value, "properties") and hasattr(value, "labels"):
         label = value.labels[0] if value.labels else "Node"
         t.node(label, value.properties.get("id"))
-        return {"label": label, **clean(value.properties)}
+        props = clean(value.properties)
+        return {"label": label, **(_hide_row_values(props) if label == "Row" else props)}
+    if isinstance(value, dict):
+        out = {k: _serialize(v, t) for k, v in value.items()}
+        return _hide_row_values(out) if "values" in out and "conditions" in out else out
     if hasattr(value, "properties") and hasattr(value, "relation"):
         return {"type": value.relation, **clean(value.properties)}
     if isinstance(value, list):
@@ -250,14 +311,17 @@ def _serialize(value, t: Touched):
 
 def run_cypher(graph, query: str) -> ToolResult:
     """Free-form read-only Cypher on the code graph: FalkorDB's read-only mode rejects
-    writes; results are capped at CYPHER_ROWS rows and the query times out."""
+    writes; results are capped at CYPHER_ROWS rows and the query times out. Table row
+    values are hidden: they come from compute, which matches rows and maps columns."""
     try:
         result = graph.ro_query(query, timeout=CYPHER_TIMEOUT_MS)
     except Exception as exc:  # syntax errors, writes refused by read-only mode, timeouts
         return ToolResult(f"query failed: {str(exc)[:200]}", {"query": query}, error=True)
     t = Touched()
-    rows = [[_serialize(v, t) for v in row] for row in result.result_set[:CYPHER_ROWS]]
     header = [h[1] if isinstance(h, (list, tuple)) else h for h in (result.header or [])]
+    hidden = {i for i, h in enumerate(header) if str(h).split(".")[-1] in ROW_VALUE_KEYS}
+    rows = [[HIDDEN if i in hidden else _serialize(v, t) for i, v in enumerate(row)]
+            for row in result.result_set[:CYPHER_ROWS]]
     capped = len(result.result_set) > CYPHER_ROWS
     return ToolResult(f"{len(rows)} rows" + (f" (capped at {CYPHER_ROWS})" if capped else ""),
                       {"columns": header, "rows": rows, "capped": capped}, t)

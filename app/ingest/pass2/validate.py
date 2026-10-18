@@ -26,7 +26,7 @@ SEVERITY = {
     "source_quote": "low", "unmapped": "low", "reference_unknown": "low", "footnote_unknown": "low",
     "bad_id": "low", "refused": "high", "equation_mismatch": "high", "equation_latex": "low",  # equation_latex: the checker could not verify
     "image_read": "low", "image_read_disagrees": "high", "equation_missing": "medium",
-    "value_column": "high", "row_missing": "high",
+    "value_column": "high", "row_missing": "high", "value_missing": "high",
 }
 GRID_METHODS = {"docling", "find_tables"}  # grids whose cells are trusted for exact matching
 SHORT_EDIT_RAW, SHORT_EDIT_NEW = 2, 3  # character-level edit outside suspect text
@@ -713,6 +713,46 @@ def is_body_row(row: RowRec, caption: str, headers: list[str]) -> bool:
     return not (cap and (text in cap or cap in text))
 
 
+def _cond_key(text: str) -> str:
+    text = (text or "").lower().replace("≤", "<=").replace("≥", ">=").replace("√", "sqrt").replace("′", "'")
+    return re.sub(r"[\s()*·×]+", "", text)
+
+
+COMPARISON = re.compile(r"[≤≥<>]")
+ITEM_NUMBER = re.compile(r"^\s*\d+\.\s*$")  # '1.' numbering a list item
+
+
+def _not_a_value(text: str, conds: str, header: str = "") -> bool:
+    """Label text (a trailing digit is a footnote marker), a comparison, list numbering,
+    or text that is part of the row's conditions."""
+    return (is_blank(text) or is_label(text, header) or mostly_words(text) or bool(COMPARISON.search(text))
+            or bool(ITEM_NUMBER.match(text)) or (bool(_cond_key(text)) and _cond_key(text) in conds))
+
+
+def grid_numbers_missing(out, row: RowRec, headers: list[str], band: list[str] | None = None,
+                         markers: set[str] | frozenset = frozenset()) -> list[str]:
+    """Numbers printed in the row that the answer's values for the row leave out: in its
+    grid cells, and in ``band`` (the words of the PDF's text layer inside the table's width
+    and the row's height, which also catches a column the grid lost). Numbers that appear
+    in the row's conditions are not values either."""
+    answered = []
+    for value in out.values:
+        answered += ([value.number] if value.number is not None else []) + numbers(value.value)
+    answered += numbers(" ".join(out.conditions))
+    conds = _cond_key(" ".join(out.conditions))
+    missing = []
+    texts = [(f"col {c}", cell, headers[c] if c < len(headers) else "") for c, cell in enumerate(row.cells)]
+    texts += [("text", word, "") for word in band or []]
+    for where, text, header in texts:
+        if _not_a_value(text, conds, header) or (where == "text" and text.strip() in markers):
+            continue  # a footnote marker printed as its own word is not a value
+        for n in numbers(text):
+            if not any(abs(n - a) <= 1e-9 * max(1.0, abs(n)) for a in answered):
+                missing.append(f"{where}: {text.strip()[:30]}")
+                break
+    return list(dict.fromkeys(missing))
+
+
 def value_columns(result: TableExtraction) -> list[Issue]:
     """Every value must sit in a column that a header parameter names, or nothing says
     what the number is. One issue per row, listing its stray columns."""
@@ -728,8 +768,11 @@ def value_columns(result: TableExtraction) -> list[Issue]:
     return issues
 
 
-def check_table(result: TableExtraction, table: TableRec, rows: list[RowRec]) -> list[Issue]:
+def check_table(result: TableExtraction, table: TableRec, rows: list[RowRec],
+                bands: dict[int, list[str]] | None = None) -> list[Issue]:
+    """``bands``: row index -> the words of the text layer in that row's band (optional)."""
     issues: list[Issue] = []
+    number_rows: set[int] = set()
     by_index = {r.index: r for r in rows}
     width = max((len(r.cells) for r in rows), default=0)
     seen = set()
@@ -739,12 +782,17 @@ def check_table(result: TableExtraction, table: TableRec, rows: list[RowRec]) ->
             issues.append(Issue("grid_dimension", f"row {out.row} is not a body row of this grid"))
             continue
         seen.add(out.row)
+        band = (bands or {}).get(out.row) or []
         for value in out.values:
+            if value.col >= len(row.cells) and value.number is not None and \
+                    any(abs(n - value.number) <= 1e-9 * max(1.0, abs(n)) for n in numbers(" ".join(band))):
+                continue  # a value the grid lost, printed in the row's text band: accepted past the grid
             if not 0 <= value.col < len(row.cells):
                 issues.append(Issue("grid_dimension", f"row {out.row} has no column {value.col}"))
                 continue
             if (issue := number_issue(value, row, table)) and table.trust == "text":
                 issues.append(issue)  # text-trust tables: the text layer is the reference
+                number_rows.add(out.row)
             if value.formula:
                 try:
                     parse_side(value.formula) if SAFE_EXPR.match(value.formula) and "__" not in value.formula \
@@ -754,12 +802,22 @@ def check_table(result: TableExtraction, table: TableRec, rows: list[RowRec]) ->
                                                        f"{value.formula[:80]!r}: {exc}"))
     issues += value_columns(result)
     headers = column_headers(rows)
+    if table.trust == "text":  # image-trust tables: the text layer is not the reference
+        for out in result.rows:
+            row = by_index.get(out.row)
+            if row is None or row.is_header or out.row in number_rows:
+                continue  # a row with a wrong number is already retried for it
+            markers = {m for m, _ in table.footnotes} | set(row.markers)
+            if gaps := grid_numbers_missing(out, row, headers, (bands or {}).get(out.row), markers):
+                issues.append(Issue("value_missing", f"row {out.row}: numbers in the grid are missing from the answer "
+                                                     f"({'; '.join(gaps[:6])}); report every value in the row"))
     missing = [r.index for r in rows if r.index not in seen and is_body_row(r, table.caption, headers)]
     if missing:
         issues.append(Issue("row_missing", f"body rows of the grid are missing from the answer: {missing[:20]}; "
                                            f"report every row that holds values"))
+    past_grid = {x.col for o in result.rows for x in o.values if x.col >= width}  # accepted above
     for hp in result.header_parameters:
-        if not 0 <= hp.col < width:
+        if not 0 <= hp.col < width and hp.col not in past_grid:
             issues.append(Issue("grid_dimension", f"header parameter {hp.parameter_id}: no column {hp.col}"))
         if not ID_RE.match(hp.parameter_id):
             issues.append(Issue("bad_id", f"parameter id {hp.parameter_id!r} is not an ASCII identifier"))

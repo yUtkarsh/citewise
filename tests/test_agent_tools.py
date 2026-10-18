@@ -184,8 +184,27 @@ def test_dependencies_upstream_and_downstream(code_graph):
 def test_get_clause_returns_text_references_equations_and_labels(code_graph):
     r = gt.get_clause(code_graph, "1.3")
     assert r.data["page"] == 11 and r.data["equations"][0]["crop"]
-    assert {x["id"] for x in r.data["references"]} == {"Equation 1-2", "Table 1-1"}
+    refs = {x["id"]: x for x in r.data["references"]}
+    assert set(refs) == {"Equation 1-2", "Table 1-1", "1"}
+    assert refs["1"]["kind"] == "pdf link" and "kind" not in refs["Table 1-1"]  # PDF links kept, marked
     assert any(x.label == "unreviewed" for x in r.labels)
+    assert r.data["flagged"] is True and "review_status" not in r.data and "status" not in r.data
+
+
+def test_a_pdf_link_to_a_target_the_text_names_is_not_listed_twice(code_graph):
+    refs = gt.get_clause(code_graph, "1.2").data["references"]
+    assert sorted(x["type"] for x in refs if x["id"] == "1.3") == ["alternative_to", "requires"]
+    assert all(x.get("kind") != "pdf link" for x in refs)  # the link to 1.3 adds nothing
+    assert "flagged" not in gt.get_clause(code_graph, "1.2").data  # not flagged: no status at all
+
+
+def test_get_clause_on_a_table_gives_columns_and_conditions_but_no_values(code_graph):
+    r = gt.get_clause(code_graph, "Table 1-1")
+    assert [c["id"] for c in r.data["value_columns"]] == ["a", "b"] and r.data["condition_columns"] == ["kind"]
+    assert r.data["rows"][0] == {"row": "Table 1-1#r1", "conditions": ["Type A", "R ≤ 3"]}
+    assert r.data["footnotes"][0]["kind"] == "interpolation"
+    assert "0.02" not in r.for_model() and "compute" in r.data["values"]
+    assert gt.get_clause(code_graph, "Table 1-1#r3").data["id"] == "Table 1-1"  # a row id gives its table
 
 
 def test_applicable_clauses_checks_conditions_against_facts(code_graph):
@@ -200,6 +219,20 @@ def test_trace_formats_citations_with_pages(code_graph):
     assert lines[0] == "Equation 1-1 (in 1.2 Base Shear), p. 10"
     assert lines[1] == "Table 1-1, row 3 (Type B), p. 12"
     assert any(x.label == "unreviewed" and x.target == "1.3" for x in r.labels)
+
+
+def test_run_cypher_hides_table_row_values(code_graph):
+    for query in ("MATCH (r:Row {id: 'Table 1-1#r3'}) RETURN r",
+                  "MATCH (r:Row {id: 'Table 1-1#r3'}) RETURN properties(r)",
+                  "MATCH (r:Row {id: 'Table 1-1#r3'}) RETURN r.values, r.cells, r.conditions"):
+        text = gt.run_cypher(code_graph, query).for_model()
+        assert "0.5" not in text and "hidden" in text and "Type B" in text, query
+
+
+def test_tool_results_carry_no_review_status():
+    from app.agent.results import clean
+    assert clean({"id": "x", "status": "extracted", "review_status": "unreviewed"}) == {"id": "x"}
+    assert clean({"id": "y", "status": "flagged", "review_status": "unreviewed"}) == {"id": "y", "flagged": True}
 
 
 def test_run_cypher_is_read_only_and_capped(code_graph):
