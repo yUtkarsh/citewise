@@ -146,3 +146,20 @@ def test_table_job_sends_grid_caption_footnotes_and_crops(fema_profile, tmp_path
     assert payload["table"]["caption"] == t.caption
     assert [g["row"] for g in payload["grid"]] == [r.index for r in t.rows]
     assert len([i for i in job.images if i.label.startswith("table crop")]) == len(t.crops)
+
+
+def test_grid_rows_are_sent_as_col_text_pairs_of_non_empty_cells():
+    from app.ingest.pass2.jobs import grid_row
+    row = RowRec(7, 1, (0, 0, 1, 1), ["Stirrup spacing", "", "0.02", "", "0.2"], False, "find_tables")
+    assert grid_row(row) == {"row": 7, "header": False, "cells": [
+        {"col": 0, "text": "Stirrup spacing"}, {"col": 2, "text": "0.02"}, {"col": 4, "text": "0.2"}]}
+
+
+def test_slice_matches_either_prime_spelling():
+    d = NotationDict()
+    d.add(1, [entry("f_prime_c", "f′c", aliases=["f'c"])])
+    assert [e.id for e in d.slice("where f'c is the strength", None)] == ["f_prime_c"]
+    assert [e.id for e in d.slice("where f′c is the strength", None)] == ["f_prime_c"]
+    d2 = NotationDict()
+    d2.add(1, [entry("f_prime_c", "f'c")])
+    assert d2.slice("uses f′c here", None)

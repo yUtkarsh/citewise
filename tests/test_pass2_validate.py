@@ -328,3 +328,71 @@ def test_notation_ids_are_identifiers_and_unique():
                                  NotationEntry(id="f_prime_c", **entry)])
     issues = v.check_notation(page, "f c ' = compressive strength of concrete")
     assert codes(issues) == ["bad_id", "bad_id"]
+
+
+# ---- LaTeX against SymPy ------------------------------------------------------------------
+
+EQ_3_13_SYMBOLS = {"F_px": "F_{px}", "F_i_lateral": "F_i", "w_x": "w_x", "w_i": "w_i", "n": "n", "x": "x"}
+
+
+def eq_out(latex, sympy, computes="F_px"):
+    return EquationOut(equation_id="Equation 3-13", latex=latex, sympy=sympy, computes=computes, uses=[],
+                       source_quote="")
+
+
+def test_equation_3_13_current_answer_fails_the_latex_check():
+    """FEMA 356 Eq. 3-13 as Claude answered it: a sum of ratios in SymPy, an inner sum
+    without its upper limit in LaTeX."""
+    current = eq_out(r"F_{px} = \sum_{i=x}^{n} F_i \frac{w_x}{\sum_{i=x} w_i}",
+                     "F_px = Sum(F_i_lateral * w_x / w_i, (i, x, n))")
+    issue = v.check_equation_latex(current, EQ_3_13_SYMBOLS, "t")
+    assert issue is not None and issue.retry
+    # with well-formed LaTeX for the code's formula, the sum of ratios disagrees numerically
+    against_code = eq_out(r"F_{px} = \frac{\sum_{i=x}^{n} F_i}{\sum_{i=x}^{n} w_i} w_x", current.sympy)
+    issue = v.check_equation_latex(against_code, EQ_3_13_SYMBOLS, "t")
+    assert issue.code == "equation_mismatch" and issue.severity == "high"
+    fixed = eq_out(against_code.latex, "F_px = w_x*Sum(F_i_lateral, (i, x, n))/Sum(w_i, (i, x, n))")
+    assert v.check_equation_latex(fixed, EQ_3_13_SYMBOLS, "t") is None
+
+
+def test_latex_check_handles_primes_greek_digits_in_subscripts_and_d():
+    symbols = {"V_CWall318E": "V_{CWall318E}", "alpha_c": r"\alpha_c", "lambda": r"\lambda",
+               "f_prime_cE": "f'_{cE}", "rho_t": r"\rho_t", "f_ytE": "f_{ytE}", "A_cv": "A_{cv}"}
+    ok = EquationOut(equation_id=None, latex=r"V_{CWall318E}=(\alpha_c\lambda\sqrt{f'_{cE}}+\rho_t f_{ytE})A_{cv}",
+                     sympy="V_CWall318E = (alpha_c*lambda*sqrt(f_prime_cE) + rho_t*f_ytE)*A_cv",
+                     computes="V_CWall318E", uses=[], source_quote="")
+    assert v.check_equation_latex(ok, symbols, "t") is None
+    depth = EquationOut(equation_id=None, latex=r"V = 2 b_w d \sqrt{f_c}", sympy="V = 2*b_w*d*sqrt(f_c)",
+                        computes="V", uses=[], source_quote="")
+    assert v.check_equation_latex(depth, {"V": "V", "b_w": "b_w", "d": "d", "f_c": "f_c"}, "t") is None
+    wrong = depth.model_copy(update={"sympy": "V = 2*b_w*d*f_c"})
+    assert v.check_equation_latex(wrong, {"V": "V", "b_w": "b_w", "d": "d", "f_c": "f_c"}, "t").code == \
+        "equation_mismatch"
+
+
+def test_latex_symbols_without_a_parameter_are_reported():
+    e = EquationOut(equation_id=None, latex=r"V = C_t Q", sympy="V = C_t*Q", computes="V", uses=[], source_quote="")
+    issue = v.check_equation_latex(e, {"V": "V", "C_t": "C_t"}, "t")
+    assert issue.code == "equation_latex" and "Q" in issue.detail
+
+
+# ---- where-block corrections and primes ---------------------------------------------------------
+
+def test_where_block_lines_take_character_level_corrections():
+    from app.ingest.pass2.records import WhereRec
+    c = clause("The shear strength is given by the equation.")
+    c.where = [WhereRec("Vn", "nominal strength ðkipsÞ þ allowance", None)]
+    r = extraction(symbol_corrections=[corr("ðkipsÞ þ allowance", "(kips) + allowance")])
+    check = v.check_clause(r, c, set())
+    assert not check.issues and check.accepted[0][1] == "where"
+    assert check.corrected_text is None  # the clause text itself is unchanged
+    worded = extraction(symbol_corrections=[corr("nominal strength", "nominal capacity")])
+    assert codes(v.check_clause(worded, c, set()).issues) == ["symbol_correction"]
+    missing = extraction(symbol_corrections=[corr("not anywhere", "not anywhere′")])
+    issue = v.check_clause(missing, c, set()).issues[0]
+    assert "where-block" in issue.detail
+
+
+def test_primes_are_one_character():
+    assert v.norm_primes("c'nl and f’c") == "c′nl and f′c"
+    assert v.symbol_key("f'_{cE}") == v.symbol_key("f′cE") == v.symbol_key("f_prime_cE")

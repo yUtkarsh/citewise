@@ -112,6 +112,9 @@ All calls are real-time, 10 to 20 in parallel. Extraction calls use a low effort
 - Output matches the Pydantic schema; every source quote appears in the source text.
 - Equations parse in SymPy; every symbol is defined locally or in the notation dictionary; letters roughly match the text layer.
 - Table numbers match Docling cells exactly; grid dimensions match; header cells are exempt.
+- Source trust, decided per table:
+  - **Text clean** (no symbol warnings in the table region and a text layer present): Claude's numbers must match the text layer; a mismatch is retried, then flagged.
+  - **Text suspect or missing** (symbol warnings or unmapped-font spans in the region, or no text layer): Claude's numbers are accepted from the image, and each such value is marked `source: image`. Only those cells are sent for a second, independent read with the same model. If both reads agree, the value is stored with a low-severity note; if they disagree, it is flagged high.
 - Every blank-cell interpretation is flagged for review.
 - On failure, one retry with the error in the prompt; then the result is stored as flagged.
 

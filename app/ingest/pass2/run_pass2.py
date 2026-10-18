@@ -19,7 +19,7 @@ import pymupdf
 from app.config import get_settings, require_model
 from app.ingest.pass1 import references as refs
 from app.ingest.pass2 import images as img
-from app.ingest.pass2.jobs import KINDS, Job, clause_job, is_trivial, page_job, table_jobs
+from app.ingest.pass2.jobs import KINDS, Job, clause_job, is_trivial, page_job, second_read_job, table_jobs
 from app.ingest.pass2.notation import NotationDict, link_terms
 from app.ingest.pass2.records import ClauseRec, Skeleton2
 from app.ingest.pass2.runner import CostLog, JobState, Outcome, Runner, cost_of
@@ -29,7 +29,7 @@ from app.llm import CACHE_DIR, AsyncTransport, cache_key, cache_path
 from app.prompts import load
 from app.profile.schema import Profile
 
-OUTPUT_GUESS = {"notation": 5000, "definitions": 3000, "clause": 700, "table": 3000}  # tokens, for --dry-run
+OUTPUT_GUESS = {"notation": 5000, "definitions": 3000, "clause": 700, "table": 3000, "table_cells": 800}  # tokens, for --dry-run
 IMAGE_TOKEN_CAP = 1600  # Claude scales images to about 1.15 megapixels
 
 
@@ -68,11 +68,13 @@ class GraphSink:
         write_terms(self.graph, terms, links)
 
     def result(self, outcome, notation_ids):
-        from app.graph.pass2_writers import write_clause, write_table
+        from app.graph.pass2_writers import write_clause, write_second_read, write_table
         if outcome.job.kind == "clause":
             write_clause(self.graph, outcome, notation_ids)
         elif outcome.job.kind == "table":
             write_table(self.graph, outcome)
+        elif outcome.job.kind == "table_cells":
+            write_second_read(self.graph, outcome)
 
 
 # ---- selection ---------------------------------------------------------------------------
@@ -112,8 +114,10 @@ def checker_for(job: Job, notation: NotationDict):
     if job.kind == "definitions":
         return lambda out: v.check_definitions(out, job.page_text)
     if job.kind == "clause":
-        ids = notation.ids()
-        return lambda out: v.check_clause(out, job.clause, ids).issues
+        ids, latex = notation.ids(), notation.latex()
+        return lambda out: v.check_clause(out, job.clause, ids, latex).issues
+    if job.kind == "table_cells":
+        return lambda out: v.check_second_read(out, job.cells)
     return lambda out: v.check_table(out, job.table, job.rows)
 
 
@@ -301,7 +305,15 @@ async def run_pass2(doc: pymupdf.Document, pdf_hash: str, profile: Profile, skel
     lock = asyncio.Lock()
     for job in trivial:
         done.append(await runner.skip(job, lock))
-    done += await runner.run(jobs)
+    first_reads = await runner.run(jobs)
+    done += first_reads
+    # image-trust tables: an independent second read of every number the text layer cannot confirm
+    second = [second_read_job(o.job, cells) for o in first_reads
+              if o.job.kind == "table" and o.output is not None and o.job.table.trust == "image"
+              and (cells := v.image_cells(o.output, o.job.table, o.job.rows))]
+    if second:
+        log(f"tables: second read of image-sourced cells for {len(second)} table(s)")
+        done += await runner.run(second)
 
     flagged = Counter(i.code for o in done for i in o.issues)
     report |= {

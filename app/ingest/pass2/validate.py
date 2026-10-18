@@ -24,12 +24,17 @@ SEVERITY = {
     "undefined_symbol": "high", "blank_cell": "high", "grid_dimension": "high", "invalid_output": "high",
     "uncertain_symbol_correction": "medium", "symbol_correction": "medium", "equation_structure": "medium",
     "source_quote": "low", "unmapped": "low", "reference_unknown": "low", "footnote_unknown": "low",
-    "bad_id": "low", "refused": "high",
+    "bad_id": "low", "refused": "high", "equation_mismatch": "high", "equation_latex": "medium",
+    "image_read": "low", "image_read_disagrees": "high",
 }
 GRID_METHODS = {"docling", "find_tables"}  # grids whose cells are trusted for exact matching
 SHORT_EDIT_RAW, SHORT_EDIT_NEW = 2, 3  # character-level edit outside suspect text
 MIN_UNCHANGED = 0.8
 LETTER_MATCH = 0.6
+EQUATION_POINTS = 3
+EQUATION_RTOL = 1e-6
+LOWER_LIMIT, UPPER_LIMIT = 2, 4  # integer values for symbols used as sum limits
+PRIMES = "'′’"
 ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
 SAFE_EXPR = re.compile(r"^[A-Za-z0-9_+\-*/().,=<>\s]*$")
 RELATION = re.compile(r"<=|>=|==|=|<|>")
@@ -99,9 +104,21 @@ def _sympy_globals() -> dict:
 
 
 def parse_side(text: str):
+    """Parse one side; names that are Python keywords (a parameter called 'lambda') are
+    renamed for the parser and restored afterwards."""
+    import keyword
+
+    from sympy import Symbol
     from sympy.parsing.sympy_parser import parse_expr, standard_transformations
 
-    return parse_expr(text, local_dict={}, global_dict=_sympy_globals(), transformations=standard_transformations)
+    renamed = {}
+
+    def hide(m):
+        renamed[m.group(0) + "_kw_"] = m.group(0)
+        return m.group(0) + "_kw_"
+    safe = re.sub(r"\b(" + "|".join(keyword.kwlist) + r")\b", hide, text)
+    expr = parse_expr(safe, local_dict={}, global_dict=_sympy_globals(), transformations=standard_transformations)
+    return expr.xreplace({Symbol(k): Symbol(v) for k, v in renamed.items()})
 
 
 def parse_formula(text: str):
@@ -137,6 +154,244 @@ def letters_match(latex: str, raw: str) -> float:
     ours, theirs = latex_letters(latex), Counter(c for c in raw if c.isascii() and c.isalpha())
     total = sum(ours.values())
     return 1.0 if not total else sum(min(n, theirs[c]) for c, n in ours.items()) / total
+
+
+# ---- LaTeX against SymPy ---------------------------------------------------------------
+
+def norm_primes(text: str) -> str:
+    """One prime character: ASCII apostrophe and right single quote become the prime."""
+    return re.sub("['\u2019]", "\u2032", text)
+
+
+def symbol_key(name: str) -> str:
+    """Spelling-independent key for a symbol: 'C_{vx}', 'C_vx' and 'Cvx' agree (case
+    counts: T and t differ); primes (f'_{cE}, f′cE, id f_prime_cE) become 'prime'."""
+    name = re.sub(f"[{PRIMES}]|\\\\prime", "prime", name)
+    name = re.sub(r"\\(mathrm|mathit|text|operatorname)", "", name)
+    return re.sub(r"[^A-Za-z0-9]", "", name)
+
+
+DIGIT_WORDS = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine"]
+UPPER_GREEK = ["Gamma", "Delta", "Theta", "Lambda", "Xi", "Pi", "Sigma", "Upsilon", "Phi", "Psi", "Omega"]
+
+
+def _upper_greek(m) -> str:
+    return "Z_{" + m.group(1) + (m.group(2) or m.group(3) or "") + "}"
+
+
+def latex_for_parsing(latex: str) -> str:
+    r"""LaTeX the parser accepts. Parameter LaTeX goes through the same rewrite before
+    matching, so names still agree:
+    - primes move into the subscript (f'_{cE} -> f_{primecE});
+    - digits in longer subscripts are spelled out (V_{C318} -> V_{Cthreeoneeight});
+    - upper-case Greek, which the parser lacks, becomes a placeholder (\Delta_w -> Z_{Deltaw});
+    - \pi becomes its value, \pm becomes +, square brackets become parentheses;
+    - \left/\right and spacing commands are dropped."""
+    text = re.sub(r"\\(left|right)\s*\\?([\[\]{}])", lambda m: "(" if m.group(2) in "[{" else ")", latex)
+    text = re.sub(r"\\(left|right|,|;|!|quad|qquad)", " ", text)
+    text = text.replace("[", "(").replace("]", ")").replace(r"\lvert", "|").replace(r"\rvert", "|")
+    text = re.sub(r"\\pm(?![A-Za-z])", "+", text)
+    text = re.sub(r"\\pi(?![A-Za-z])", " 3.141592653589793 ", text)
+    text = re.sub(r"\\(" + "|".join(UPPER_GREEK) + r")(?![A-Za-z])(?:_\{([^{}]*)\}|_([A-Za-z0-9]))?",
+                  _upper_greek, text)
+    text = re.sub(r"\\(mathrm|mathit|text)\{([^}]*)\}", r"\2", text)
+
+    def prime(m):
+        sub = m.group(2) or m.group(3) or ""
+        return f"{m.group(1)}_{{prime{sub}}}"
+    pattern = r"([A-Za-z])(?:[" + PRIMES + r"]|\^\{?\\prime\}?)(?:_\{([^}]*)\}|_([A-Za-z0-9]))?"
+    text = re.sub(pattern, prime, text)
+
+    def spell(m):
+        sub = m.group(1)
+        if len(sub) > 1 and sub.isalnum() and any(c.isdigit() for c in sub):
+            sub = "".join(DIGIT_WORDS[int(c)] if c.isdigit() else c for c in sub)
+        return "_{" + sub + "}"
+    text = re.sub(r"_\{([^{}]*)\}", spell, text)
+    text = first_relation(text)
+    # products the parser does not see: after a bare d (it reads "d x" as a differential),
+    # and after a closing parenthesis or absolute value ("(a-1)\frac{b}{c}", "|a|(R-1)")
+    text = re.sub(r"\|([^|]*)\|", r"(|\1|)", text)
+    text = _product_after_roots(text)
+    not_operator = r"(?!\\(?:le|leq|ge|geq|lt|gt|cdot|times|right|pm|ne|neq)(?![A-Za-z]))"
+    text = re.sub(r"(\)(?:\^\{[^{}]*\}|\^[A-Za-z0-9])?)\s*" + not_operator + r"(?=[A-Za-z0-9\\(])",
+                  r"\1 \\cdot ", text)
+    return re.sub(r"(?<![A-Za-z\\_{^])d(?![A-Za-z_^{])\s*(?=[A-Za-z0-9\\({])", r"d \\cdot ", text)
+
+
+def _product_after_roots(text: str) -> str:
+    """'\\sqrt{f}A' -> '\\sqrt{f} \\cdot A': the parser needs the product after a root."""
+    out, i = [], 0
+    for m in re.finditer(r"\\sqrt(?:\[[^\]]*\])?\{", text):
+        if m.start() < i:
+            continue
+        depth, j = 1, m.end()
+        while j < len(text) and depth:
+            depth += {"{": 1, "}": -1}.get(text[j], 0)
+            j += 1
+        out.append(text[i:j])
+        rest = text[j:].lstrip()
+        if rest and (rest[0].isalnum() or rest[0] == "(") or (rest[:1] == "\\" and not re.match(
+                r"\\(le|leq|ge|geq|cdot|times|right|pm|ne|neq)(?![A-Za-z])", rest)):
+            out.append(r" \cdot ")
+        i = j
+    out.append(text[i:])
+    return "".join(out)
+
+
+RELATION_TOKEN = re.compile(r"\\(?:leq|le|geq|ge|lt|gt|neq|ne)(?![A-Za-z])|<=|>=|=|<|>")
+
+
+def first_relation(latex: str) -> str:
+    """'A = (…)^2 \\le 3.0' -> 'A = (…)^2': a chain keeps its first relation, the one
+    the SymPy form states."""
+    def depth_at(i: int) -> int:
+        return latex[:i].count("{") - latex[:i].count("}")
+    tokens = [t for t in RELATION_TOKEN.finditer(latex) if depth_at(t.start()) == 0]  # not inside \sum_{i=1}
+    return latex[:tokens[1].start()].rstrip() if len(tokens) > 1 else latex
+
+
+def parse_latex_relation(latex: str) -> list[tuple]:
+    """(lhs, rhs) readings of the LaTeX; the lark parser returns several when the LaTeX is
+    ambiguous (usually equal). Raises ValueError."""
+    from sympy.core.relational import Relational
+    from sympy.parsing.latex import parse_latex
+
+    import warnings
+
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")  # SymPy deprecation notices from the lark transformer
+            expr = parse_latex(latex_for_parsing(latex), backend="lark")
+    except Exception as exc:  # the parser raises many exception types
+        raise ValueError(f"the LaTeX does not parse: {str(exc).splitlines()[0][:120]}") from exc
+    readings = getattr(expr, "children", None) if getattr(expr, "data", None) == "_ambig" else [expr]
+    relations = [r for r in readings or [] if isinstance(r, Relational)]
+    if not relations:
+        raise ValueError("the LaTeX is not an equation or inequality")
+    unique = list(dict.fromkeys((r.lhs, r.rhs) for r in relations))
+    return unique
+
+
+
+def _index_names(expr) -> set[str]:
+    from sympy import Sum
+    return {lim[0].name for s in expr.atoms(Sum) for lim in s.limits}
+
+
+def _limit_values(*exprs) -> dict[str, int]:
+    """Symbols used as sum limits get small integers: lower limits 2, upper limits 4."""
+    from sympy import Sum
+    values: dict[str, int] = {}
+    for expr in exprs:
+        for s in expr.atoms(Sum):
+            for _, lo, hi in s.limits:
+                for sym in lo.free_symbols:
+                    values.setdefault(sym.name, LOWER_LIMIT)
+                for sym in hi.free_symbols:
+                    values[sym.name] = UPPER_LIMIT if values.get(sym.name) != LOWER_LIMIT else 3
+    return values
+
+
+def _indexed_by(name: str, index: str) -> bool:
+    return index in [p for p in re.split(r"[_{}]+", name) if p]
+
+
+def evaluate(expr, values: dict[str, float], index: dict[str, int] | None = None) -> float:
+    """Numeric value with sums expanded; a symbol subscripted by a sum index varies with it."""
+    from sympy import Float, Sum
+
+    index = index or {}
+    if isinstance(expr, Sum):
+        var, lo, hi = expr.limits[0]
+        body = expr.function if len(expr.limits) == 1 else Sum(expr.function, *expr.limits[1:])
+        start, stop = int(round(evaluate(lo, values, index))), int(round(evaluate(hi, values, index)))
+        return sum(evaluate(body, values, {**index, var.name: k}) for k in range(start, stop + 1))
+    if expr.is_Symbol:
+        if expr.name in index:
+            return float(index[expr.name])
+        value = values[expr.name]
+        for name, k in index.items():
+            if _indexed_by(expr.name, name):
+                value *= 1 + 0.37 * k
+        return value
+    if expr.is_Number:
+        return float(expr)
+    if not expr.args:
+        return float(expr.evalf())
+    args = [Float(evaluate(a, values, index)) for a in expr.args]
+    return float(expr.func(*args).evalf())
+
+
+def _rename(expr, key_to_id: dict[str, str], keep: set[str]):
+    """Symbols renamed to parameter ids by key; returns (expr, unmapped names)."""
+    from sympy import Symbol
+    mapping, unmapped = {}, []
+    for sym in expr.free_symbols:
+        if sym.name in keep:
+            continue
+        pid = key_to_id.get(symbol_key(sym.name))
+        if pid is None:
+            unmapped.append(sym.name)
+        else:
+            mapping[sym] = Symbol(pid)
+    return expr.xreplace(mapping), unmapped
+
+
+def check_equation_latex(eq, symbols: dict[str, str], seed: str) -> Issue | None:
+    """Parse the LaTeX, map its symbols to parameter ids, and compare it with the SymPy
+    form at 3 positive points (sum limits as small integers). ``symbols``: id -> LaTeX
+    for the clause's parameters and the notation entries. Where the parser reads the
+    LaTeX more than one way, any reading that agrees passes."""
+    label = eq.equation_id or eq.computes
+    try:
+        readings = parse_latex_relation(eq.latex)
+        slhs, srhs = parse_relation(eq.sympy)
+    except ValueError as exc:
+        return Issue("equation_latex", f"equation {label}: {exc}; write standard LaTeX (sums with both limits)")
+    key_to_id: dict[str, str] = {}
+    for pid, latex in symbols.items():  # in order: the first parameter to claim a key keeps it
+        key_to_id.setdefault(symbol_key(pid), pid)
+        key_to_id.setdefault(symbol_key(latex_for_parsing(latex or "")), pid)
+    first = None
+    for llhs, lrhs in readings:
+        issue = _compare_reading(llhs, lrhs, slhs, srhs, key_to_id, label, seed)
+        if issue is None:
+            return None
+        first = first or issue
+    return first
+
+
+def _compare_reading(llhs, lrhs, slhs, srhs, key_to_id, label, seed) -> Issue | None:
+    import random
+
+    keep = _index_names(lrhs) | _index_names(srhs)
+    renamed = [_rename(e, key_to_id, keep) for e in (llhs, lrhs)]
+    (llhs, _), (lrhs, _) = renamed
+    unmapped = sorted({n for _, u in renamed for n in u})
+    if unmapped:
+        return Issue("equation_latex", f"equation {label}: LaTeX symbols {', '.join(unmapped)} match no parameter; "
+                                       f"give each symbol a parameter whose latex is written the same way")
+    if {s.name for s in llhs.free_symbols} != {s.name for s in slhs.free_symbols}:
+        return Issue("equation_mismatch", f"equation {label}: the LaTeX left side {llhs} is not the SymPy left side {slhs}")
+    names = {s.name for e in (lrhs, srhs, llhs, slhs) for s in e.free_symbols} - keep
+    limits = _limit_values(lrhs, srhs)
+    rng = random.Random(seed)
+    compared = 0
+    for _ in range(EQUATION_POINTS):
+        values = {n: float(limits[n]) if n in limits else rng.uniform(0.5, 3.0) for n in sorted(names)}
+        try:
+            a, b = evaluate(lrhs, values), evaluate(srhs, values)
+        except Exception:  # a point outside the domain (division by zero, complex result)
+            continue
+        compared += 1
+        if abs(a - b) > EQUATION_RTOL * max(1.0, abs(a), abs(b)):
+            point = ", ".join(f"{k}={v:.3g}" for k, v in sorted(values.items()))
+            return Issue("equation_mismatch", f"equation {label}: the LaTeX and the SymPy form give different "
+                                              f"values ({a:.6g} vs {b:.6g} at {point})")
+    if not compared:
+        return Issue("equation_latex", f"equation {label}: could not evaluate the LaTeX or SymPy form at any test point")
+    return None
 
 
 # ---- symbol corrections ----------------------------------------------------------------
@@ -225,19 +480,47 @@ def apply_corrections(text: str, placed: list[tuple[int, SymbolCorrection]]) -> 
 class ClauseCheck:
     issues: list[Issue]
     corrected_text: str | None
-    accepted: list[SymbolCorrection] = field(default_factory=list)  # corrections that passed
+    # corrections that passed, with where they apply: "clause" (the clause text) or "where" (a where-block line)
+    accepted: list[tuple[SymbolCorrection, str]] = field(default_factory=list)
 
 
-def check_clause(result: ClauseExtraction, clause: ClauseRec, notation_ids: set[str]) -> ClauseCheck:
+def where_lines(clause: ClauseRec) -> list[str]:
+    """Where-block lines as Claude sees them: each item's symbol, definition, and both together."""
+    items = [*clause.where, *(w for e in clause.equations for w in e.where)]
+    return [t for w in items for t in (f"{w.symbol} {w.definition}", w.symbol, w.definition) if t]
+
+
+def place_correction(corr: SymbolCorrection, clause: ClauseRec) -> tuple[Issue | None, int, str]:
+    """Check a correction against the clause text, else the where-block line holding its raw
+    text. Returns (issue, position in the clause text or -1, target)."""
+    if corr.raw and corr.raw in clause.text:
+        issue, start = check_correction(corr, clause.text, suspect_mask(clause.text, clause.suspect_spans))
+        return issue, start, "clause"
+    for line in where_lines(clause):
+        if corr.raw and corr.raw in line:
+            issue, _ = check_correction(corr, line, suspect_mask(line, clause.suspect_spans))
+            return issue, -1, "where"
+    issue, start = check_correction(corr, clause.text, [])
+    if issue and "is not in the clause text" in issue.detail:
+        issue.detail = f"raw text {corr.raw[:60]!r} is not in the clause text or its where-block"
+    return issue, start, "clause"
+
+
+def check_clause(result: ClauseExtraction, clause: ClauseRec, notation_ids: set[str],
+                 notation_latex: dict[str, str] | None = None) -> ClauseCheck:
+    """``notation_latex``: id -> LaTeX of the notation entries, for the LaTeX-vs-SymPy check.
+    Symbol corrections may fix the clause text or a where-block line; only clause-text ones
+    change the corrected clause text."""
     issues: list[Issue] = []
-    mask = suspect_mask(clause.text, clause.suspect_spans)
-    placed = []
+    placed, accepted = [], []
     for corr in result.symbol_corrections:
-        issue, start = check_correction(corr, clause.text, mask)
+        issue, start, target = place_correction(corr, clause)
         if issue:
             issues.append(issue)
             continue
-        placed.append((start, corr))
+        accepted.append((corr, target))
+        if target == "clause":
+            placed.append((start, corr))
         if corr.uncertain:
             issues.append(Issue("uncertain_symbol_correction", f"{corr.raw[:60]!r} -> {corr.corrected[:60]!r}: "
                                                                f"{corr.note[:120]}", retry=False))
@@ -274,6 +557,11 @@ def check_clause(result: ClauseExtraction, clause: ClauseRec, notation_ids: set[
         if undefined := sorted(names - known):
             issues.append(Issue("undefined_symbol", f"equation {label}: {', '.join(undefined)} not defined in the "
                                                     f"clause's parameters or the notation dictionary"))
+        symbols = {p.id: p.latex for p in result.parameters}  # the clause's own parameters win a shared LaTeX
+        for i, latex in {**{i: i for i in notation_ids}, **(notation_latex or {})}.items():
+            symbols.setdefault(i, latex)
+        if not undefined and (issue := check_equation_latex(eq, symbols, f"{clause.id}:{label}")):
+            issues.append(issue)
         if eq.computes not in {s.name for s in lhs.free_symbols}:
             issues.append(Issue("equation_structure", f"equation {label}: computes {eq.computes!r} is not on the "
                                                       f"left-hand side"))
@@ -287,7 +575,7 @@ def check_clause(result: ClauseExtraction, clause: ClauseRec, notation_ids: set[
     issues += [Issue("reference_unknown", f"reference {r.text[:80]!r} is not in the references list", retry=False)
                for r in result.references if norm_text(r.text) not in known_refs]
     issues += [Issue("unmapped", f"{u.kind}: {u.text[:120]}", retry=False) for u in result.unmapped]
-    return ClauseCheck(issues, corrected if placed else None, [c for _, c in placed])
+    return ClauseCheck(issues, corrected if placed else None, accepted)
 
 
 # ---- tables ----------------------------------------------------------------------------
@@ -347,6 +635,42 @@ def number_issue(value, row: RowRec, table: TableRec) -> Issue | None:
     return None
 
 
+def image_cells(result: TableExtraction, table: TableRec, rows: list[RowRec]) -> list[tuple[int, int, float, str]]:
+    """(row, col, number, value) of every number the text layer does not confirm: on an
+    image-trust table these are taken from the image and go to a second read."""
+    by_index = {r.index: r for r in rows}
+    out = []
+    for o in result.rows:
+        row = by_index.get(o.row)
+        if row is None or row.is_header:
+            continue
+        for value in o.values:
+            if 0 <= value.col < len(row.cells) and number_issue(value, row, table):
+                out.append((o.row, value.col, value.number, value.value))
+    return out
+
+
+def check_second_read(reads, wanted: list[tuple[int, int, float, str]]) -> list[Issue]:
+    """Compare an independent second read of image-sourced cells with the first.
+    A missing cell is retried; agreement is a low note, disagreement a high flag."""
+    got = {(c.row, c.col): c for c in reads.cells}
+    missing = [(r, c) for r, c, _, _ in wanted if (r, c) not in got]
+    if missing:
+        return [Issue("grid_dimension", f"cells not read: {missing[:20]}")]
+    agree, issues = 0, []
+    for r, c, number, value in wanted:
+        second = got[(r, c)].number
+        if second is not None and abs(second - number) <= 1e-9 * max(1.0, abs(number)):
+            agree += 1
+        else:
+            issues.append(Issue("image_read_disagrees", f"row {r}, col {c}: first read {value!r} ({number:g}), "
+                                                       f"second read {got[(r, c)].value!r}", retry=False))
+    if agree:
+        issues.append(Issue("image_read", f"{agree} value(s) read from the image, confirmed by a second read",
+                            retry=False))
+    return issues
+
+
 def check_table(result: TableExtraction, table: TableRec, rows: list[RowRec]) -> list[Issue]:
     issues: list[Issue] = []
     by_index = {r.index: r for r in rows}
@@ -362,8 +686,8 @@ def check_table(result: TableExtraction, table: TableRec, rows: list[RowRec]) ->
             if not 0 <= value.col < len(row.cells):
                 issues.append(Issue("grid_dimension", f"row {out.row} has no column {value.col}"))
                 continue
-            if issue := number_issue(value, row, table):
-                issues.append(issue)
+            if (issue := number_issue(value, row, table)) and table.trust == "text":
+                issues.append(issue)  # text-trust tables: the text layer is the reference
             if value.formula:
                 try:
                     parse_side(value.formula) if SAFE_EXPR.match(value.formula) and "__" not in value.formula \

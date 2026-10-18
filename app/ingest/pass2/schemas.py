@@ -155,3 +155,16 @@ class TableExtraction(BaseModel):
     rows: list[RowOut]
     footnote_rules: list[FootnoteRule]
     blank_cells: list[BlankCell]
+
+
+# ---- second read of image-sourced table cells -----------------------------------------
+
+class CellRead(BaseModel):
+    row: int
+    col: int
+    value: str = Field(description="The cell as printed in the image")
+    number: float | None = Field(description="The number in the cell, or null when it holds none")
+
+
+class CellReads(BaseModel):
+    cells: list[CellRead]

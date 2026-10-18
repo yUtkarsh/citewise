@@ -22,6 +22,9 @@ class NotationDict:
     def ids(self) -> set[str]:
         return {e.id for e, _ in self.entries}
 
+    def latex(self) -> dict[str, str]:
+        return {e.id: e.latex for e, _ in self.entries}
+
     def slice(self, text: str, chapter: str | None, extra_symbols: set[str] = frozenset()) -> list[NotationEntry]:
         """Entries whose symbol or an alias appears in ``text`` as a token, in scope for
         ``chapter``. A one-character symbol counts only when it also appears among
@@ -37,8 +40,13 @@ class NotationDict:
         return out[:SLICE_LIMIT]
 
 
+def _primes(text: str) -> str:
+    return re.sub("['’]", "′", text)  # ' and ’ match ′
+
+
 def _present(form: str, text: str, extra: set[str]) -> bool:
-    form = form.strip()
+    form, text = _primes(form.strip()), _primes(text)
+    extra = {_primes(x) for x in extra}
     compact = form.replace(" ", "")
     if len(compact) == 1:
         return form in extra or compact in extra

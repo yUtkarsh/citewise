@@ -51,9 +51,9 @@ def fake_claude(seen: list):
             for g in p["grid"]:
                 if g["header"]:
                     continue
-                values = [{"col": i, "value": cell, "number": v.numbers(cell)[0], "unit": None, "formula": None}
-                          for i, cell in enumerate(g["cells"]) if v.numbers(cell)]
-                rows.append({"row": g["row"], "conditions": [g["cells"][0][:30] if g["cells"] else ""],
+                values = [{"col": c["col"], "value": c["text"], "number": v.numbers(c["text"])[0], "unit": None,
+                           "formula": None} for c in g["cells"] if v.numbers(c["text"])]
+                rows.append({"row": g["row"], "conditions": [g["cells"][0]["text"][:30] if g["cells"] else ""],
                              "values": values})
             out = {"header_parameters": [], "rows": rows, "footnote_rules": [], "blank_cells": []}
         return Reply(text=json.dumps(out), model="claude-haiku-5-5", stop_reason="end_turn",

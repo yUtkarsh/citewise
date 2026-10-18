@@ -14,7 +14,7 @@ from app.graph.writers import GraphRows, write
 from app.ingest.pass2.notation import term_id
 from app.ingest.pass2.runner import Outcome
 from app.ingest.pass2.schemas import PASS2_SCHEMA_VERSION, ClauseExtraction, NotationEntry, TableExtraction, TermEntry
-from app.ingest.pass2.validate import check_clause, norm_text
+from app.ingest.pass2.validate import check_clause, image_cells, norm_primes, norm_text
 
 
 def _flags(outcome: Outcome) -> list[str]:
@@ -51,8 +51,8 @@ def _merge_parameters(graph, rows: list[dict], overwrite: bool) -> None:
 
 def write_notation(graph, entries: list[tuple[NotationEntry, int, str]], defined_in: dict[str, list[str]]) -> None:
     """``entries``: (entry, page, status). ``defined_in``: parameter id -> clause ids."""
-    rows = [{"id": e.id, "symbol": e.display, "latex": e.latex, "description": e.description, "units": e.units,
-             "aliases": e.aliases, "scope_chapters": e.scope_chapters, "defined_in_text": e.defined_in,
+    rows = [{"id": e.id, "symbol": norm_primes(e.display), "latex": e.latex, "description": e.description,
+             "units": e.units, "aliases": list(dict.fromkeys(norm_primes(a) for a in e.aliases)), "scope_chapters": e.scope_chapters, "defined_in_text": e.defined_in,
              "source": "notation",
              **pass2_provenance(page, None, e.source_quote, "notation", status)}
             for e, page, status in entries]
@@ -103,12 +103,12 @@ def write_clause(graph, outcome: Outcome, notation_ids: set[str]) -> None:
         write(graph, g, indexes=False)
         return
     check = check_clause(result, clause, notation_ids)
-    props |= {"text_corrected": check.corrected_text,
+    props |= {"text_corrected": norm_primes(check.corrected_text) if check.corrected_text else None,
               "unmapped": json.dumps([u.model_dump() for u in result.unmapped], ensure_ascii=False)}
     g.node("Clause", props)
 
     prov = lambda quote: pass2_provenance(clause.page, None, quote, model, status)  # noqa: E731
-    params = [{"id": p.id, "symbol": p.symbol, "latex": p.latex, "description": p.description, "units": p.units,
+    params = [{"id": p.id, "symbol": norm_primes(p.symbol), "latex": p.latex, "description": p.description, "units": p.units,
                "source": "clause", **prov(p.source_quote)} for p in result.parameters]
     _merge_parameters(graph, params, overwrite=False)
     for p in result.parameters:
@@ -146,12 +146,12 @@ def write_clause(graph, outcome: Outcome, notation_ids: set[str]) -> None:
             g.node(label, {"id": nid, **item, **prov(quote)})
             g.edge(("Clause", clause.id), edge, (label, nid))
 
-    for n, corr in enumerate(check.accepted, 1):  # rejected corrections stay in the flags only
+    for n, (corr, target) in enumerate(check.accepted, 1):  # rejected corrections stay in the flags only
         line = next((f for f in clause.flagged if corr.raw in f.text), None)
         nid = f"{clause.id}#corr{n}"
         g.node("SymbolCorrection", {
-            "id": nid, "raw": corr.raw, "corrected": corr.corrected, "uncertain": corr.uncertain, "note": corr.note,
-            "line_id": line.id if line else None,
+            "id": nid, "raw": corr.raw, "corrected": norm_primes(corr.corrected), "uncertain": corr.uncertain,
+            "note": corr.note, "target": target, "line_id": line.id if line else None,
             **pass2_provenance(line.page if line else clause.page, line.bbox if line else None, corr.raw, model,
                                "flagged" if corr.uncertain else status)})
         g.edge(("Clause", clause.id), "HAS_CORRECTION", ("SymbolCorrection", nid))
@@ -175,9 +175,9 @@ def write_table(graph, outcome: Outcome) -> None:
     graph.query(
         "MATCH (t:Table {id: $id}) SET t.status = CASE WHEN $part > 1 AND t.status = 'flagged' THEN 'flagged' "
         "ELSE $status END, t.flags = CASE WHEN $part > 1 THEN coalesce(t.flags, []) + $flags ELSE $flags END, "
-        "t.extraction_schema = $schema, t.extraction_method = $method",
+        "t.extraction_schema = $schema, t.extraction_method = $method, t.trust = $trust, t.trust_reason = $reason",
         {"id": table.id, "part": part, "status": status, "flags": _flags(outcome), "schema": PASS2_SCHEMA_VERSION,
-         "method": "claude:" + model})
+         "method": "claude:" + model, "trust": table.trust, "reason": table.trust_reason})
     result: TableExtraction | None = outcome.output
     if result is None:
         return
@@ -191,9 +191,12 @@ def write_table(graph, outcome: Outcome) -> None:
     blanks: dict[int, list[dict]] = {}
     for b in result.blank_cells:
         blanks.setdefault(b.row, []).append(b.model_dump())
+    from_image = {(r, c) for r, c, _, _ in image_cells(result, table, job.rows)} if table.trust == "image" else set()
     for row in result.rows:
+        values = [{**v.model_dump(), "source": "image" if (row.row, v.col) in from_image else "text"}
+                  for v in row.values]
         g.node("Row", {"id": f"{table.id}#r{row.row}", "conditions": json.dumps(row.conditions, ensure_ascii=False),
-                       "values": json.dumps([v.model_dump() for v in row.values], ensure_ascii=False),
+                       "values": json.dumps(values, ensure_ascii=False),
                        "blank_cells": json.dumps(blanks.pop(row.row, []), ensure_ascii=False), "status": status})
     for index, items in blanks.items():
         g.node("Row", {"id": f"{table.id}#r{index}", "blank_cells": json.dumps(items, ensure_ascii=False),
@@ -204,3 +207,28 @@ def write_table(graph, outcome: Outcome) -> None:
                     "SET f.rule_kind = $kind, f.rule = $rule, f.applies_to_rows = $rows, f.applies_to_cols = $cols",
                     {"tid": table.id, "marker": rule.marker, "kind": rule.kind, "rule": rule.rule,
                      "rows": rule.applies_to_rows, "cols": rule.applies_to_cols})
+
+
+def write_second_read(graph, outcome: Outcome) -> None:
+    """Record the second read on each image-sourced value (second_read, confirmed) and add
+    its notes and flags to the table; a disagreement flags the table."""
+    job = outcome.job
+    table = job.table
+    reads = {(c.row, c.col): c for c in outcome.output.cells} if outcome.output else {}
+    for index in sorted({r for r, _, _, _ in job.cells}):
+        rid = f"{table.id}#r{index}"
+        found = graph.query("MATCH (r:Row {id: $id}) RETURN r.values", {"id": rid}).result_set
+        if not found or not found[0][0]:
+            continue
+        values = json.loads(found[0][0])
+        for value in values:
+            read = reads.get((index, value["col"]))
+            if value.get("source") == "image" and read is not None:
+                value["second_read"] = read.value
+                value["confirmed"] = read.number is not None and value["number"] is not None and \
+                    abs(read.number - value["number"]) <= 1e-9 * max(1.0, abs(value["number"]))
+        graph.query("MATCH (r:Row {id: $id}) SET r.values = $values",
+                    {"id": rid, "values": json.dumps(values, ensure_ascii=False)})
+    graph.query("MATCH (t:Table {id: $id}) SET t.flags = coalesce(t.flags, []) + $flags, "
+                "t.status = CASE WHEN $flagged THEN 'flagged' ELSE t.status END",
+                {"id": table.id, "flags": _flags(outcome), "flagged": outcome.status == "flagged"})

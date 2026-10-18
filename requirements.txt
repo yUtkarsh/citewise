@@ -10,3 +10,4 @@ sympy
 sentence-transformers
 pytest
 httpx
+lark  # SymPy's LaTeX parser (Pass 2 equation check)

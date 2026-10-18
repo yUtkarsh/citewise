@@ -10,7 +10,7 @@ from pydantic import BaseModel
 from app.ingest.pass2 import images as img
 from app.ingest.pass2.notation import NotationDict
 from app.ingest.pass2.records import ClauseRec, RowRec, Skeleton2, TableRec
-from app.ingest.pass2.schemas import ClauseExtraction, DefinitionsPage, NotationPage, TableExtraction
+from app.ingest.pass2.schemas import CellReads, ClauseExtraction, DefinitionsPage, NotationPage, TableExtraction
 
 TRIVIAL_CHARS = 40  # a clause with less text, no equations and no flags needs no call
 TABLE_SPLIT_ROWS = 80  # larger tables are sent one page segment at a time
@@ -33,6 +33,7 @@ class Job:
     clause: ClauseRec | None = None
     table: TableRec | None = None
     rows: list[RowRec] | None = None  # the rows this job covers (a table part)
+    cells: list[tuple[int, int, float, str]] | None = None  # second read: (row, col, first number, first value)
     page: int = 0
     page_text: str = ""
 
@@ -100,6 +101,13 @@ def clause_job(clause: ClauseRec, skel: Skeleton2, notation: NotationDict, pdf_h
 
 # ---- tables ---------------------------------------------------------------------
 
+def grid_row(row: RowRec) -> dict:
+    """A grid row as explicit (col, text) pairs for its non-empty cells: the column
+    index Claude reports is the grid's, whatever the image's layout looks like."""
+    return {"row": row.index, "header": row.is_header,
+            "cells": [{"col": c, "text": text} for c, text in enumerate(row.cells) if text.strip()]}
+
+
 def table_parts(table: TableRec) -> list[list[RowRec]]:
     """All rows in one part, or (large tables) one part per page with the header rows repeated."""
     if len(table.rows) <= TABLE_SPLIT_ROWS or len(set(r.page for r in table.rows)) < 2:
@@ -127,7 +135,7 @@ def table_jobs(table: TableRec, skel: Skeleton2, notation: NotationDict) -> list
         payload = {
             "table": {"id": table.id, "number": table.number, "caption": table.caption},
             "part": f"{n + 1} of {len(parts)}" if len(parts) > 1 else None,
-            "grid": [{"row": r.index, "header": r.is_header, "cells": r.cells} for r in rows],
+            "grid": [grid_row(r) for r in rows],
             "footnotes": [{"marker": m, "text": t} for m, t in table.footnotes],
             "notation": [{"id": e.id, "symbol": e.display, "aliases": e.aliases, "description": e.description,
                           "units": e.units} for e in entries],
@@ -143,3 +151,25 @@ def table_jobs(table: TableRec, skel: Skeleton2, notation: NotationDict) -> list
                         output=TableExtraction, text=_dump(payload), images=images, max_tokens=32000,
                         table=table, rows=rows))
     return jobs
+
+
+def second_read_job(first: Job, cells: list[tuple[int, int, float, str]]) -> Job:
+    """An independent second read of the image-sourced cells of an image-trust table: the
+    same images, only the cells' positions with their row label and column header, and
+    neither the grid text nor the first read's values."""
+    from app.ingest.pass2.validate import column_headers, is_label
+
+    rows = {r.index: r for r in first.rows}
+    headers = column_headers(first.rows)
+
+    def label(row: RowRec) -> str:
+        return next((c for i, c in enumerate(row.cells) if c.strip()
+                     and is_label(c, headers[i] if i < len(headers) else "")), "")
+    payload = {
+        "table": {"id": first.table.id, "number": first.table.number, "caption": first.table.caption},
+        "cells": [{"row": r, "col": c, "row_label": label(rows[r]), "column_header": headers[c] if c < len(headers) else ""}
+                  for r, c, _, _ in cells],
+    }
+    return Job(id=first.id.replace("table:", "cells:", 1), kind="table_cells", model_setting="model_tables",
+               prompt="pass2_table_cells", output=CellReads, text=_dump(payload), images=list(first.images),
+               max_tokens=16000, table=first.table, rows=first.rows, cells=cells)
