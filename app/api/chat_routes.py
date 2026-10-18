@@ -439,6 +439,18 @@ async def mock_stream(question: str, facts_in: list[dict] | None, rerun: bool,
 
 # ---- static page ---------------------------------------------------------------------------
 
+NO_CACHE = {"Cache-Control": "no-cache"}  # browsers revalidate (a cheap 304) instead of reusing a stale page
+
+
+class WebFiles(StaticFiles):
+    """web/ with revalidation, so a page never mixes a new script with an old stylesheet."""
+
+    def file_response(self, *args, **kwargs):
+        response = super().file_response(*args, **kwargs)
+        response.headers.update(NO_CACHE)
+        return response
+
+
 def mount_web(target: FastAPI) -> None:
     """Serve web/ at "/". Call after every other route is registered."""
-    target.mount("/", StaticFiles(directory=WEB, html=True), name="web")
+    target.mount("/", WebFiles(directory=WEB, html=True), name="web")

@@ -113,7 +113,7 @@ def code_card(name: str) -> dict:
 @router.get("/code/{name}")
 def code_page(name: str) -> FileResponse:
     """The code page (web/code.html); it reads the graph name from its own path."""
-    return FileResponse(ROOT / "web" / "code.html", media_type="text/html")
+    return FileResponse(ROOT / "web" / "code.html", media_type="text/html", headers={"Cache-Control": "no-cache"})
 
 
 @router.get("/codes/{name}")
