@@ -158,7 +158,7 @@ class Toolbox:
             depth = max(1, min(4, int(a.get("depth") or 3)))
             return gt.get_dependencies(g, a["id"], a.get("direction", "upstream"), depth)
         if name == "applicable_clauses":
-            return gt.applicable_clauses(g, a["scope"], self.store.all())
+            return gt.applicable_clauses(g, a["scope"], self.facts())
         if name == "get_clause":
             return gt.get_clause(g, a["id"])
         if name == "compute":
@@ -168,15 +168,24 @@ class Toolbox:
         if name == PROCEDURE_TOOL:
             if self.procedure is None:
                 return ToolResult("plan_procedure is not available", {}, error=True)
-            return self.procedure(g, a["goal"], self.store.all(), self.encode)
+            return self.procedure(g, a["goal"], self.facts(), self.encode)
         if name == "trace":
             return gt.trace(g, a.get("items") or [])
         if name == "calculate":
             from app.agent.calculate import calculate
-            return calculate(g, a, self.store.all())
+            return calculate(g, a, self.facts())
         if name == "run_cypher":
             return gt.run_cypher(g, a["query"])
         return ToolResult(f"unknown tool {name!r}", {}, error=True)
+
+    def resolved_store(self):
+        """The session facts with ids of merged parameters resolved to their survivors."""
+        from app.agent.facts import ResolvedStore
+        from app.graph.merges import merged_map
+        return ResolvedStore(self.store, merged_map(self.graph))
+
+    def facts(self) -> dict:
+        return self.resolved_store().all()
 
     def compute(self, a: dict) -> ToolResult:
         target = a["target"]
@@ -184,13 +193,13 @@ class Toolbox:
         if found and found[0] in ("Table", "Row"):
             table_id = target if found[0] == "Table" else target.rsplit("#r", 1)[0]
             row_id = a.get("row_id") if found[0] == "Table" else target
-            result = compute_table(self.graph, table_id, self.store, row_id, a.get("reason"), a.get("columns"),
+            result = compute_table(self.graph, table_id, self.resolved_store(), row_id, a.get("reason"), a.get("columns"),
                                    bool(a.get("save_as_facts")))
             for v in (result.data.get("values") or []) if isinstance(result.data, dict) else []:
                 if v.get("param") and v.get("number") is not None:
                     self.mapped.add((v["param"], float(v["number"])))
             return result
-        return compute_equation(self.graph, target, self.store.all(), a.get("solve_for"))
+        return compute_equation(self.graph, target, self.facts(), a.get("solve_for"))
 
     def parameter_id(self, given: str) -> tuple[str, bool]:
         """(id, is_parameter): a parameter id as given, else the one parameter whose id,
@@ -199,7 +208,7 @@ class Toolbox:
         stays as given (a descriptor)."""
         node = gt.find_node(self.graph, given)
         if node and node[0] == "Parameter":
-            return given, True
+            return node[1].get("id") or given, True  # a merged id resolves to its survivor
         rows = self.graph.ro_query("MATCH (p:Parameter) RETURN p.id, p.symbol, p.aliases").result_set
         for case in (True, False):
             key = symbol_key(given, case)

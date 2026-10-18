@@ -3,12 +3,15 @@
 Writes are ``UNWIND ... MERGE`` with deterministic child ids, and a re-extraction first
 removes the clause's or table's previous Pass 2 children, so re-runs never duplicate and
 never leave stale facts. Parameters are shared nodes: notation pages set them; a clause
-or table only creates the ones the notation lacks (``ON CREATE``).
+or table only creates the ones the notation lacks (``ON CREATE``). An id the global pass
+merged into another parameter is written as its survivor (``merged_map``), so a re-run
+from pinned answers never re-creates the duplicate.
 """
 from __future__ import annotations
 
 import json
 
+from app.graph.merges import merged_map, rename_symbols
 from app.graph.schema import GRAPH_SCHEMA_VERSION, QUOTE_CHARS
 from app.graph.writers import GraphRows, write
 from app.ingest.pass2.notation import term_id
@@ -51,6 +54,9 @@ def _merge_parameters(graph, rows: list[dict], overwrite: bool) -> None:
 
 def write_notation(graph, entries: list[tuple[NotationEntry, int, str]], defined_in: dict[str, list[str]]) -> None:
     """``entries``: (entry, page, status). ``defined_in``: parameter id -> clause ids."""
+    merged = merged_map(graph)
+    entries = [x for x in entries if x[0].id not in merged]  # the survivor already carries it
+    defined_in = {merged.get(pid, pid): ids for pid, ids in defined_in.items()}
     rows = [{"id": e.id, "symbol": norm_primes(e.display), "latex": e.latex, "description": e.description,
              "units": e.units, "aliases": list(dict.fromkeys(norm_primes(a) for a in e.aliases)), "scope_chapters": e.scope_chapters, "defined_in_text": e.defined_in,
              "source": "notation",
@@ -108,11 +114,13 @@ def write_clause(graph, outcome: Outcome, notation_ids: set[str]) -> None:
     g.node("Clause", props)
 
     prov = lambda quote: pass2_provenance(clause.page, None, quote, model, status)  # noqa: E731
-    params = [{"id": p.id, "symbol": norm_primes(p.symbol), "latex": p.latex, "description": p.description, "units": p.units,
+    merged = merged_map(graph)
+    rid = lambda pid: merged.get(pid, pid)  # noqa: E731
+    params = [{"id": rid(p.id), "symbol": norm_primes(p.symbol), "latex": p.latex, "description": p.description, "units": p.units,
                "source": "clause", **prov(p.source_quote)} for p in result.parameters]
     _merge_parameters(graph, params, overwrite=False)
     for p in result.parameters:
-        g.edge(("Clause", clause.id), "DEFINES", ("Parameter", p.id))
+        g.edge(("Clause", clause.id), "DEFINES", ("Parameter", rid(p.id)))
 
     equations = {e.id: e for e in clause.equations}
     inline = 0
@@ -120,19 +128,20 @@ def write_clause(graph, outcome: Outcome, notation_ids: set[str]) -> None:
         if eq.equation_id in equations:
             src = equations[eq.equation_id]
             eid = src.id
-            g.node("Equation", {"id": eid, "latex": eq.latex, "sympy": eq.sympy, "status": status,
+            g.node("Equation", {"id": eid, "latex": eq.latex, "sympy": rename_symbols(eq.sympy, merged), "status": status,
                                 "extraction_schema": PASS2_SCHEMA_VERSION, "extraction_method": "claude:" + model})
         else:
             inline += 1
             eid = f"{clause.id}#eq{inline}"
-            g.node("Equation", {"id": eid, "number": None, "latex": eq.latex, "sympy": eq.sympy, "inline": True,
+            g.node("Equation", {"id": eid, "number": None, "latex": eq.latex, "sympy": rename_symbols(eq.sympy, merged),
+                                "inline": True,
                                 **prov(eq.source_quote)})
             g.edge(("Clause", clause.id), "CONTAINS", ("Equation", eid))
-        missing = [{"id": pid, "symbol": pid, "source": "equation", **prov(eq.source_quote)}
+        missing = [{"id": rid(pid), "symbol": rid(pid), "source": "equation", **prov(eq.source_quote)}
                    for pid in [eq.computes, *eq.uses] if pid not in notation_ids]
         _merge_parameters(graph, missing, overwrite=False)
-        g.edge(("Equation", eid), "COMPUTES", ("Parameter", eq.computes))
-        for pid in dict.fromkeys(eq.uses):
+        g.edge(("Equation", eid), "COMPUTES", ("Parameter", rid(eq.computes)))
+        for pid in dict.fromkeys(rid(u) for u in eq.uses):
             g.edge(("Equation", eid), "USES", ("Parameter", pid))
 
     for label, edge, tag, items in (
@@ -182,12 +191,13 @@ def write_table(graph, outcome: Outcome) -> None:
     if result is None:
         return
     prov = lambda quote: pass2_provenance(table.pages[0] if table.pages else None, None, quote, model, status)  # noqa
-    _merge_parameters(graph, [{"id": h.parameter_id, "symbol": h.header_text, "units": h.units, "source": "table",
+    merged = merged_map(graph)
+    _merge_parameters(graph, [{"id": merged.get(h.parameter_id, h.parameter_id), "symbol": h.header_text, "units": h.units, "source": "table",
                                **prov(h.header_text)} for h in result.header_parameters], overwrite=False)
     g = GraphRows()
     by_param: dict[str, list] = {}
     for h in result.header_parameters:  # a parameter may sit in several columns (merged-cell grids)
-        by_param.setdefault(h.parameter_id, []).append(h)
+        by_param.setdefault(merged.get(h.parameter_id, h.parameter_id), []).append(h)
     for pid, hs in by_param.items():
         g.edge(("Table", table.id), "GIVES", ("Parameter", pid),
                {"col": hs[0].col, "cols": sorted({h.col for h in hs}), "units": hs[0].units,

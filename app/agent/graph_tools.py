@@ -41,6 +41,7 @@ STEPS = {
         "MATCH (x:Equation)-[e:USES]->(n:Parameter {id: $id}) RETURN 'Equation', x, 'USES', x.id, n.id, e",
         "MATCH (x:Clause)-[e:DEFINES]->(n:Parameter {id: $id}) RETURN 'Clause', x, 'DEFINES', x.id, n.id, e",
         "MATCH (n:Parameter {id: $id})-[e:DEFINED_IN]->(x:Clause) RETURN 'Clause', x, 'DEFINED_IN', n.id, x.id, e",
+        "MATCH (x:Clause)-[e:REFERENCES]->(n:Parameter {id: $id}) RETURN 'Clause', x, 'REFERENCES', x.id, n.id, e",
     ],
     ("downstream", "Equation"): [
         "MATCH (n:Equation {id: $id})-[e:COMPUTES]->(x:Parameter) RETURN 'Parameter', x, 'COMPUTES', n.id, x.id, e",
@@ -76,6 +77,10 @@ def find_node(graph, node_id: str) -> tuple[str, dict] | None:
     rows = graph.ro_query("MATCH (n) WHERE n.id = $id RETURN labels(n)[0], n LIMIT 5", {"id": node_id}).result_set
     order = ["Parameter", "Equation", "Table", "Clause", "Row", "Term", "Figure", "Footnote"]
     rows.sort(key=lambda r: order.index(r[0]) if r[0] in order else 99)
+    if rows and rows[0][0] == "MergedId":  # a parameter merged by the global pass: its survivor
+        from app.graph.merges import resolve_id
+        target = resolve_id(graph, node_id)
+        return find_node(graph, target) if target != node_id else None
     return (rows[0][0], rows[0][1].properties) if rows else None
 
 

@@ -7,7 +7,7 @@ CLI before the memory graph exists); ``app.memory`` adds the FalkorDB-backed sto
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Protocol
 
 SOURCES = ("user", "matched_row", "assumed", "agent_selected")
@@ -76,3 +76,34 @@ def facts_block(store: FactStore) -> str:
     lines += [f"{m.table_id}: matched {m.row_id} ({m.reason})" for m in store.matches()]
     body = "\n".join(f"- {line}" for line in lines) if lines else "- none yet"
     return "Current project facts (from the memory graph; use these values, ask for missing ones):\n" + body
+
+
+def resolve_facts(facts: dict[str, Fact], merged: dict[str, str]) -> dict[str, Fact]:
+    """Facts keyed by the surviving id of any parameter the global pass merged (a fact
+    saved under the old id still applies); a fact saved under the survivor wins."""
+    out = {i: f for i, f in facts.items() if i not in merged}
+    for i, f in facts.items():
+        if i in merged and f.kind == "parameter":
+            out.setdefault(merged[i], replace(f, id=merged[i]))
+        elif i in merged:
+            out[i] = f
+    return out
+
+
+@dataclass
+class ResolvedStore:
+    """A FactStore whose ``all`` resolves merged ids; writes go to the wrapped store."""
+    store: FactStore
+    merged: dict[str, str]
+
+    def all(self) -> dict[str, Fact]:
+        return resolve_facts(self.store.all(), self.merged)
+
+    def set(self, fact: Fact) -> Fact | None:
+        return self.store.set(fact)
+
+    def match_row(self, match: RowMatch) -> None:
+        self.store.match_row(match)
+
+    def matches(self) -> list[RowMatch]:
+        return self.store.matches()
