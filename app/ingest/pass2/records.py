@@ -194,7 +194,9 @@ def from_graph(graph, doc_id: str) -> Skeleton2:
     if clauses and all(not c.regions for c in clauses.values()):
         raise RuntimeError("the skeleton has no clause regions: re-run Pass 1 (python -m app.ingest.run <pdf> --pass1)")
 
-    q = ("MATCH (c:Clause)-[:CONTAINS]->(e:Equation) OPTIONAL MATCH (e)-[:WHERE]->(w:WhereItem) "
+    # Pass 1 equations only: inline equations are Pass 2 results, not skeleton
+    q = ("MATCH (c:Clause)-[:CONTAINS]->(e:Equation) WHERE e.inline IS NULL OR e.inline = false "
+         "OPTIONAL MATCH (e)-[:WHERE]->(w:WhereItem) "
          "RETURN c.id, e.id, e.number, e.page, e.bbox, e.raw_text, e.crop, "
          "collect([w.symbol, w.definition, w.unit])")
     for cid, eid, num, page, bbox, raw, crop, where in _rows(graph, q):

@@ -121,6 +121,27 @@ def test_rewording_is_rejected():
     assert codes(v.check_clause(r, c, set()).issues) == ["symbol_correction"]
 
 
+@pytest.mark.parametrize("raw, corrected", [
+    ("the psuedo lateral load", "the pseudo lateral load"),  # spelling
+    ("displacement modifier η", "displacement multiplier η"),  # wording, as small letter edits
+    ("J =Coefficient", "J = Coefficient"),  # spacing
+    ("strength of 3000 psi", "strength of 3600 psi"),  # a digit for a digit
+])
+def test_letter_digit_and_spacing_edits_are_not_symbol_fixes(raw, corrected):
+    c = clause(f"see {raw} here")
+    assert codes(v.check_clause(extraction(symbol_corrections=[corr(raw, corrected)]), c, set()).issues) ==         ["symbol_correction"]
+
+
+@pytest.mark.parametrize("raw, corrected", [
+    ("1 + 5 (θ -0.1)/", "1 + 5 (θ − 0.1)/"),  # minus sign
+    ("a = 0.5", "α = 0.5"),  # Greek letter read as Latin
+])
+def test_symbol_edits_are_accepted(raw, corrected):
+    c = clause(f"see {raw} here")
+    check = v.check_clause(extraction(symbol_corrections=[corr(raw, corrected)]), c, set())
+    assert not check.issues and check.accepted
+
+
 def test_many_small_edits_that_change_most_of_a_span_are_rejected():
     c = clause("abcdefghij")
     r = extraction(symbol_corrections=[corr("abcdefghij", "aXcXeXgXiX")])
@@ -249,6 +270,24 @@ def test_header_cells_are_exempt_and_header_rows_are_not_body_rows():
     assert not v.check_table(r, t, t.rows)
     as_body = result([RowOut(row=0, conditions=[], values=[]), *r.rows])
     assert codes(v.check_table(as_body, t, t.rows)) == ["grid_dimension"]
+
+
+def test_heading_rows_with_footnote_digits_need_no_values():
+    t = table("docling", [["Type", "m-factor", "Limit"], ["ii. Beams controlled by shear1"],
+                          ["Columns—flexure 2, 7"], ["Flexible", "1.5", "2,000"]])
+    r = result([RowOut(row=3, conditions=[], values=[value(1, 1.5), value(2, 2000)])])
+    assert not v.check_table(r, t, t.rows)  # rows 1 and 2 are labels with marker digits, not values
+    missing = result([RowOut(row=1, conditions=[], values=[])])
+    assert "grid_dimension" in codes(v.check_table(missing, t, t.rows))  # row 3 has values
+
+
+def test_wordy_cell_under_a_numeric_header_is_a_value():
+    t = table("docling", [["Ratio", "0.2", "0.5"], ["Flexible", "1.5 typ", "about 2 kips"]])
+    assert v.has_values(t.rows[1], v.column_headers(t.rows))
+    r = result([])
+    assert "grid_dimension" in codes(v.check_table(r, t, t.rows))
+    assert v.is_label("Fully Restrained Moment Connections13", "Component")
+    assert not v.is_label("9θ y", "LS") and not v.is_label("about 2 kips", "0.5")
 
 
 def test_missing_rows_and_columns_are_grid_errors():

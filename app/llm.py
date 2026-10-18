@@ -231,21 +231,28 @@ async def call_validated(
 ) -> CallResult:
     """Claude's answer for one Pass 2 job: parsed, checked, retried once with the issues
     that ask for a retry, and cached (flagged results too, so a resume never pays twice).
-    A cache hit is re-checked but never retried."""
+    A cache hit is re-checked; it is retried only if it was accepted on its first attempt
+    and now fails a check (the checks changed), since every answer is owed one retry."""
     path = cache_path(cache_key(cache_text, schema_version, prompt), prompt, cache_dir)
+    usages, raw, output, issues, error, refused = [], None, None, [], None, False
+    first, prior = 1, []  # prior: usages of a cached first attempt (already paid for)
     if path.is_file():
         record = json.loads(path.read_text(encoding="utf-8"))
         output, issues, error = _parse_and_check(record["raw"], spec.output, check)
-        return CallResult(output, record["raw"], issues, record.get("attempts", 1), record.get("usages", []),
-                          from_cache=True, refused=record.get("refused", False), parse_error=error,
-                          retry_reasons=record.get("retry_reasons", []))
+        attempts = record.get("attempts", 1)
+        unretried = attempts < 2 and not record.get("refused") and (error or any(i.retry for i in issues))
+        if not unretried:
+            return CallResult(output, record["raw"], issues, attempts, record.get("usages", []),
+                              from_cache=True, refused=record.get("refused", False), parse_error=error,
+                              retry_reasons=record.get("retry_reasons", []))
+        # Accepted on its first attempt under older checks: it is owed its one retry.
+        raw, prior, first = record["raw"], list(record.get("usages", [])), 2
 
     send = transport or anthropic_async_transport
     if callable(spec.content):
         spec = CallSpec(**{**spec.__dict__, "content": await asyncio.to_thread(spec.content)})
-    usages, raw, output, issues, error, refused = [], None, None, [], None, False
     attempt, problems = 0, []
-    for attempt in (1, 2):
+    for attempt in range(first, 3):
         content = spec.content
         if attempt == 2:
             problems = [error] if error else [i.detail for i in issues if i.retry]
@@ -265,7 +272,7 @@ async def call_validated(
     path.parent.mkdir(parents=True, exist_ok=True)
     record = {"prompt": prompt.name, "prompt_version": prompt.version, "model": spec.model,
               "schema_version": schema_version, "raw": raw if raw is not None else "", "attempts": attempt,
-              "usages": usages, "refused": refused, "retry_reasons": problems}
+              "usages": prior + usages, "refused": refused, "retry_reasons": problems}
     path.write_text(json.dumps(record, ensure_ascii=False, indent=1), encoding="utf-8")
     return CallResult(output, raw, issues, attempt, usages, refused=refused, parse_error=error,
                       retry_reasons=problems)

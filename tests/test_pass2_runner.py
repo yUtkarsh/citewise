@@ -235,3 +235,17 @@ def test_cached_jobs_run_past_the_cost_cap(tmp_path):
     r2, written = make_runner(tmp_path, send, concurrency=1, max_cost=0.0, estimate_cost=lambda j, m: 1.0)
     run(r2, [job(n) for n in range(3)])
     assert len(written) == 3 and not r2.stopped and len(calls) == 3
+
+
+def test_cached_first_attempt_failing_a_newer_check_gets_its_one_retry(tmp_path):
+    send, calls = fake('{"value": 0}', '{"value": 4}')
+    lenient, _ = make_runner(tmp_path, send)
+    lenient.checks = lambda j: (lambda out: [])  # older checks accept value 0
+    run(lenient, [job()])
+    r, _ = make_runner(tmp_path, send)  # current checks reject it
+    [o] = run(r, [job()])
+    assert len(calls) == 2 and o.status == "extracted" and o.output.value == 4 and o.call.attempts == 2
+    assert len(o.call.usages) == 1  # only the new attempt is billed to this run
+    r2, _ = make_runner(tmp_path, send)
+    run(r2, [job()])
+    assert len(calls) == 2  # now cached with both attempts

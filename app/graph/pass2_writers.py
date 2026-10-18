@@ -146,7 +146,7 @@ def write_clause(graph, outcome: Outcome, notation_ids: set[str]) -> None:
             g.node(label, {"id": nid, **item, **prov(quote)})
             g.edge(("Clause", clause.id), edge, (label, nid))
 
-    for n, corr in enumerate(result.symbol_corrections, 1):
+    for n, corr in enumerate(check.accepted, 1):  # rejected corrections stay in the flags only
         line = next((f for f in clause.flagged if corr.raw in f.text), None)
         nid = f"{clause.id}#corr{n}"
         g.node("SymbolCorrection", {

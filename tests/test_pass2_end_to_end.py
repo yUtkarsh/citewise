@@ -188,6 +188,10 @@ def test_graph_writes_are_idempotent_and_read_back(fixture_doc, tmp_path, graph)
     asyncio.run(run_pass2(doc, "fixturehash", profile, skel, sink, Pass2Options(redo=True), tmp_path / "s.jsonl",
                           transport=fake_claude([]), cache_dir=tmp_path / "c", log=lambda *_: None))
     assert counts(graph) == first
+    graph.query("MATCH (c:Clause {id: $id}) CREATE (c)-[:CONTAINS]->(:Equation {id: 'x#eq1', inline: true})",
+                {"id": skel.clauses[0].id})  # a Pass 2 inline equation has no page or bbox
+    again = from_graph(graph, "fixtures")  # resuming reads the skeleton back after Pass 2 wrote to it
+    assert sum(len(c.equations) for c in again.clauses) == sum(len(c.equations) for c in skel.clauses)
     assert graph.ro_query("MATCH (p:Parameter {id: 'V_d'}) RETURN count(p)").result_set[0][0] == 1
     assert graph.ro_query("MATCH (:Clause)-[:HAS_CONDITION]->(c:Condition) RETURN count(c)").result_set[0][0] > 0
 

@@ -8,7 +8,7 @@ the result for review. Severity follows SPEC Step 4.
 from __future__ import annotations
 
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import difflib
 import re
 import unicodedata
@@ -156,10 +156,20 @@ def suspect_mask(text: str, suspect_spans: list[str]) -> list[bool]:
     return mask
 
 
+def involves_symbol(changed: str) -> bool:
+    """True if a changed run touches a symbol: a character that is not an ASCII letter,
+    digit or whitespace ('p' -> '√', '0' -> '′', '-' -> '−', 'a' -> 'α'). Letter-for-letter
+    and spacing edits are spelling or layout, not misread symbols."""
+    return any(not (c.isascii() and (c.isalnum() or c.isspace())) for c in changed)
+
+
 def check_correction(corr: SymbolCorrection, text: str, mask: list[bool]) -> tuple[Issue | None, int]:
     """Accept a correction that only replaces misread symbols. Suspect characters may be
     replaced in runs of any length; anywhere else each change is at most 2 characters
-    replaced by at most 3, and at least 80% of the other characters stay unchanged.
+    replaced by at most 3, no replacement swaps letters or digits for letters or digits,
+    the correction changes at least one symbol, and at least 80% of the other
+    characters stay unchanged (a moved prime, 'fc0' -> 'f′c', deletes a digit and
+    inserts the symbol elsewhere).
     Returns (issue or None, position of raw in text)."""
     if not corr.raw:
         return Issue("symbol_correction", "a correction has an empty raw text"), -1
@@ -182,7 +192,15 @@ def check_correction(corr: SymbolCorrection, text: str, mask: list[bool]) -> tup
             return Issue("symbol_correction",
                          f"{corr.raw[i1:i2]!r} -> {corr.corrected[j1:j2]!r} is more than a symbol fix; "
                          f"only misread symbols may change"), start
+        if op == "replace" and not involves_symbol(corr.raw[i1:i2] + corr.corrected[j1:j2]):
+            return Issue("symbol_correction",
+                         f"{corr.raw[i1:i2]!r} -> {corr.corrected[j1:j2]!r} swaps letters or digits; "
+                         f"spelling, wording and numbers must stay as in the text layer"), start
         plain_changed += sum(1 for i, _ in seg if not mask[start + i])
+    changed = "".join(corr.raw[i1:i2] + corr.corrected[j1:j2] for op, i1, i2, j1, j2 in ops if op != "equal")
+    if not involves_symbol(changed) and not any(mask[start + i] for i in range(len(corr.raw))):
+        return Issue("symbol_correction", f"correction of {corr.raw[:60]!r} changes no symbol; spelling, wording "
+                                          f"and spacing must stay as in the text layer"), start
     if plain_changed > max(SHORT_EDIT_RAW, (1 - MIN_UNCHANGED) * plain_total):
         return Issue("symbol_correction", f"correction of {corr.raw[:60]!r} changes too much of the text layer"), start
     return None, start
@@ -207,6 +225,7 @@ def apply_corrections(text: str, placed: list[tuple[int, SymbolCorrection]]) -> 
 class ClauseCheck:
     issues: list[Issue]
     corrected_text: str | None
+    accepted: list[SymbolCorrection] = field(default_factory=list)  # corrections that passed
 
 
 def check_clause(result: ClauseExtraction, clause: ClauseRec, notation_ids: set[str]) -> ClauseCheck:
@@ -268,13 +287,38 @@ def check_clause(result: ClauseExtraction, clause: ClauseRec, notation_ids: set[
     issues += [Issue("reference_unknown", f"reference {r.text[:80]!r} is not in the references list", retry=False)
                for r in result.references if norm_text(r.text) not in known_refs]
     issues += [Issue("unmapped", f"{u.kind}: {u.text[:120]}", retry=False) for u in result.unmapped]
-    return ClauseCheck(issues, corrected if placed else None)
+    return ClauseCheck(issues, corrected if placed else None, [c for _, c in placed])
 
 
 # ---- tables ----------------------------------------------------------------------------
 
 def is_blank(cell: str) -> bool:
     return not any(c.isalnum() for c in cell or "")
+
+
+def mostly_words(text: str) -> bool:
+    """At least three letters and more letters than digits ('Connections13', not '9θ y')."""
+    letters = sum(c.isalpha() for c in text)
+    return letters >= 3 and letters > sum(c.isdigit() for c in text)
+
+
+def column_headers(rows: list[RowRec]) -> list[str]:
+    """Header text of each column: the header rows' cells joined."""
+    width = max((len(r.cells) for r in rows), default=0)
+    return [" ".join(r.cells[c] for r in rows if r.is_header and c < len(r.cells)).strip() for c in range(width)]
+
+
+def is_label(cell: str, header: str) -> bool:
+    """A cell that names its row: mostly words, in a column whose header is not a number.
+    Digits in a label are footnote markers or part of a name, not values."""
+    numeric_header = bool(header) and not mostly_words(header) and bool(numbers(header))
+    return mostly_words(cell) and not numeric_header
+
+
+def has_values(row: RowRec, headers: list[str]) -> bool:
+    """True if a cell other than a row label holds a number: the row must be answered."""
+    return any(numbers(cell) and not is_label(cell, headers[c] if c < len(headers) else "")
+               for c, cell in enumerate(row.cells))
 
 
 def band_numbers(table: TableRec, row: RowRec) -> list[float]:
@@ -327,7 +371,8 @@ def check_table(result: TableExtraction, table: TableRec, rows: list[RowRec]) ->
                 except Exception as exc:
                     issues.append(Issue("sympy_parse", f"row {out.row}, col {value.col}: formula "
                                                        f"{value.formula[:80]!r}: {exc}"))
-    missing = [r.index for r in rows if not r.is_header and r.index not in seen and any(numbers(c) for c in r.cells)]
+    headers = column_headers(rows)
+    missing = [r.index for r in rows if not r.is_header and r.index not in seen and has_values(r, headers)]
     if missing:
         issues.append(Issue("grid_dimension", f"rows with numbers are missing from the answer: {missing[:20]}"))
     for hp in result.header_parameters:
