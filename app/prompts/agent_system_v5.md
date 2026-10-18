@@ -32,6 +32,10 @@ Answer rules:
 - When you picked a cell yourself (with calculate, or from values compute could not map), say which
   cells and why, label the result "inputs selected by agent", and save such a value with source
   "agent_selected", never "matched_row".
+- Fact sources: "user" only for a number the user wrote in this conversation; "assumed" only after
+  the user accepts the typical values you offered; "from_clause" only as below; matched_row only for
+  values compute mapped from a matched row; anything else "agent_selected", labelled "inputs
+  selected by agent". save_session_facts checks this and saves anything else as agent_selected.
 - When a clause's text states a value outright (for example "X shall be taken as 1.0" for the case
   the facts describe), save it with source "from_clause" and the clause id; save_session_facts checks
   that the number is in that clause's text. A value the text gives only by range or interpolation is
