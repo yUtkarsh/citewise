@@ -8,14 +8,14 @@ from dataclasses import dataclass, field
 import time
 
 from app.config import require_model
-from app.ingest.global_pass import commentary, inferred, resolve
+from app.ingest.global_pass import commentary, gives, inferred, resolve
 from app.ingest.global_pass.calls import Caller
 from app.ingest.global_pass.checks import run_checks
 from app.ingest.global_pass.edges import clear_inferred, write_edges
 from app.ingest.global_pass.findings import FindingSet, write_findings
 from app.ingest.global_pass.similarity import load_vectors
 
-ORDER = ("resolve", "commentary", "inferred", "checks")
+ORDER = ("resolve", "commentary", "inferred", "gives", "checks")
 
 
 @dataclass
@@ -111,6 +111,26 @@ async def run_global(graph, options: GlobalOptions, transport=None, encoder=None
                                    for e in edges]}
             log(f"inferred: {out if dry else {k: v for k, v in out.items() if k != 'stored'}}")
             report["parts"]["inferred"] = out
+
+        elif part == "gives":
+            model = require_model("model_global")
+            plan = gives.plan(graph, get_encoder(), model)
+            out = {"tables": len(plan.items), "columns": sum(len(i.columns) for i in plan.items),
+                   "columns_with_candidates": sum(1 for i in plan.items for c in i.columns if c.candidates),
+                   "calls": len(plan.asks)}
+            if dry:
+                out |= caller.estimate(plan.asks)
+            else:
+                results = await caller.run(plan.asks)
+                edges, findings = gives.decide(plan, results, model)
+                cleared = clear_inferred(graph, "GIVES", "Table", "Parameter")
+                write_edges(graph, edges)
+                counts = write_findings(graph, _findings("inferred_gives", findings))
+                out |= {"edges": len(edges), "to_review": counts["inferred_gives"], "replaced_edges": cleared,
+                        "stored": [f"{e['src']} [{e['props']['via']}] -GIVES-> {e['dst']} ({e['props']['confidence']})"
+                                   for e in edges]}
+            log(f"gives: {out if dry else {k: v for k, v in out.items() if k != 'stored'}}")
+            report["parts"]["gives"] = out
 
         elif part == "checks":
             found = run_checks(graph)

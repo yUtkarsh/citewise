@@ -228,7 +228,8 @@ def table_extracted(graph, tid: str) -> dict:
             for i, index, header, cells, values, conds, blank, st in _rows(graph, (
                 "MATCH (:Table {id: $id})-[h:HAS_ROW]->(r:Row) RETURN r.id, h.index, r.is_header, r.cells, r.values, "
                 "r.conditions, r.blank_cells, r.status ORDER BY h.index"), {"id": tid})]
-    gives = _rows(graph, "MATCH (:Table {id: $id})-[g:GIVES]->(p) RETURN p.id, g.col, g.cols, g.header_text, g.units "
+    gives = _rows(graph, "MATCH (:Table {id: $id})-[g:GIVES]->(p) WHERE coalesce(g.method, '') <> 'inferred' "
+                         "RETURN p.id, g.col, g.cols, g.header_text, g.units "
                          "ORDER BY p.id", {"id": tid})
     notes = [{"marker": m, "text": t, "rule": rule, "kind": kind} for m, t, rule, kind in _rows(graph, (
         "MATCH (:Table {id: $id})-[:HAS_FOOTNOTE]->(f) RETURN f.marker, f.text, f.rule, f.rule_kind ORDER BY f.id"),

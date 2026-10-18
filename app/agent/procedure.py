@@ -226,7 +226,8 @@ def order(nodes, step_deps) -> list[tuple]:
 
 
 def table_choices(graph, table_id: str) -> dict:
-    gives = graph.ro_query("MATCH (:Table {id: $id})-[e:GIVES]->(p:Parameter) RETURN p.id, e.header_text "
+    gives = graph.ro_query("MATCH (:Table {id: $id})-[e:GIVES]->(p:Parameter) WHERE coalesce(e.method, '') <> 'inferred' "
+                           "RETURN p.id, e.header_text "
                            "ORDER BY e.col", {"id": table_id}).result_set
     rows = graph.ro_query("MATCH (:Table {id: $id})-[:HAS_ROW]->(r:Row) WHERE r.values IS NOT NULL "
                           "RETURN r.conditions", {"id": table_id}).result_set

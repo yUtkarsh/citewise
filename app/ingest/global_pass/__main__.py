@@ -1,6 +1,6 @@
 """Run the global pass on one code graph (SPEC Step 3c).
 
-    python -m app.ingest.global_pass --code fema356 [--parts checks,commentary,inferred,resolve]
+    python -m app.ingest.global_pass --code fema356 [--parts checks,commentary,inferred,gives,resolve]
                                      [--dry-run] [--max-cost 4.0] [--concurrency 10]
 
 ``checks`` makes no API calls. The other parts make one Claude call per item; ``--dry-run``
@@ -15,7 +15,7 @@ import sys
 
 from app.config import ROOT
 
-PARTS = ("checks", "commentary", "inferred", "resolve")
+PARTS = ("checks", "commentary", "inferred", "gives", "resolve")
 REPORT_DIR = ROOT / "data" / "reports"
 
 

@@ -17,7 +17,7 @@ from app.graph.schema import GRAPH_SCHEMA_VERSION, QUOTE_CHARS
 
 GLOBAL_SCHEMA_VERSION = "global-v1"
 KINDS = ("undefined_parameter", "missing_reference", "dependency_cycle",
-         "commentary_link", "inferred_edge", "merge")
+         "commentary_link", "inferred_edge", "inferred_gives", "merge")
 
 
 @dataclass

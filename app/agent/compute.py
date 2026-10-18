@@ -215,7 +215,7 @@ class Header:
 
 
 def table_headers(graph, table_id: str) -> list[Header]:
-    rows = graph.ro_query("MATCH (:Table {id: $id})-[e:GIVES]->(p:Parameter) "
+    rows = graph.ro_query("MATCH (:Table {id: $id})-[e:GIVES]->(p:Parameter) WHERE coalesce(e.method, '') <> 'inferred' "
                           "RETURN p.id, coalesce(e.cols, [e.col]), e.header_text, e.units ORDER BY e.col",
                           {"id": table_id}).result_set
     return [Header(pid, sorted(c for c in cols if c is not None), text or pid, units, i)

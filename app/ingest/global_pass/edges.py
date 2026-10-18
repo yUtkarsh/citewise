@@ -29,8 +29,12 @@ def write_edges(graph, edges: list[dict]) -> int:
         groups[(e["src_label"], e["kind"], e["dst_label"])].append({"src": e["src"], "dst": e["dst"],
                                                                    "props": e["props"]})
     for (src, kind, dst), rows in groups.items():
-        graph.query(f"UNWIND $rows AS r MATCH (a:{src} {{id: r.src}}) MATCH (b:{dst} {{id: r.dst}}) "
-                    f"MERGE (a)-[e:{kind} {{method: '{INFERRED}'}}]->(b) SET e += r.props", {"rows": rows})
+        for keyed in (False, True):  # an edge with ``via`` (the column it comes from) is keyed by it too
+            part = [r for r in rows if ("via" in r["props"]) == keyed]
+            key = f"method: '{INFERRED}'" + (", via: r.props.via" if keyed else "")
+            if part:
+                graph.query(f"UNWIND $rows AS r MATCH (a:{src} {{id: r.src}}) MATCH (b:{dst} {{id: r.dst}}) "
+                            f"MERGE (a)-[e:{kind} {{{key}}}]->(b) SET e += r.props", {"rows": part})
     return len(edges)
 
 

@@ -56,7 +56,8 @@ def header_region(graph, table_id: str) -> tuple[list[list[str]], list[str]]:
     first_values = next((i for i, (_, _, _, values) in enumerate(rows) if json.loads(values or "[]")), len(rows))
     head_rows = [json.loads(cells or "[]") for i, (_, cells, is_header, _) in enumerate(rows)
                  if is_header or i < first_values]
-    gives = [t for (t,) in graph.ro_query("MATCH (:Table {id: $id})-[e:GIVES]->() RETURN e.header_text",
+    gives = [t for (t,) in graph.ro_query("MATCH (:Table {id: $id})-[e:GIVES]->() "
+                                          "WHERE coalesce(e.method, '') <> 'inferred' RETURN e.header_text",
                                           {"id": table_id}).result_set if t]
     return head_rows, [c for r in head_rows for c in r if c] + gives
 

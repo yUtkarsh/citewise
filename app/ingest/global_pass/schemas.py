@@ -29,6 +29,17 @@ class InferredLinks(BaseModel):
     links: list[InferredLink]
 
 
+class GivesLink(BaseModel):
+    header_id: str
+    parameter_id: str
+    confidence: float = Field(ge=0, le=1)
+    reason: str
+
+
+class GivesLinks(BaseModel):
+    links: list[GivesLink]
+
+
 class MergeDecision(BaseModel):
     decision: Literal["merge", "keep_separate", "flag"]
     survivor: str
@@ -75,4 +86,18 @@ def check_merge(out: MergeDecision, members: set[str]) -> list[Issue]:
             issues.append(bad(f"merge_ids not in the cluster: {unknown}"))
         if not out.merge_ids or out.survivor in out.merge_ids:
             issues.append(bad("merge_ids must list the other ids to merge, without the survivor"))
+    return issues
+
+
+def check_gives(out: GivesLinks, candidates: dict[str, set[str]]) -> list[Issue]:
+    """``candidates``: header id -> the parameter ids offered for it."""
+    issues = []
+    for link in out.links:
+        if link.header_id not in candidates:
+            issues.append(bad(f"header_id {link.header_id!r} is not a header of this table"))
+        elif link.parameter_id not in candidates[link.header_id]:
+            issues.append(bad(f"parameter_id {link.parameter_id!r} is not a candidate for {link.header_id}"))
+        issues += _reason(link.reason)
+    if len({(x.header_id, x.parameter_id) for x in out.links}) != len(out.links):
+        issues.append(bad("each header and parameter pair at most once"))
     return issues
