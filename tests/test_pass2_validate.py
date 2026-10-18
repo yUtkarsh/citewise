@@ -494,3 +494,67 @@ def test_a_footnote_marker_printed_as_a_word_is_not_a_missing_value():
     t.footnotes = [("5", "Columns controlled by shear.")]
     r = RowOut(row=1, conditions=["Shear"], values=[value(1, 0.003)])
     assert "value_missing" not in codes(v.check_table(result([r]), t, t.rows, {1: ["5", "0.003"]}))
+
+
+# ---- garbled cell text --------------------------------------------------------------------------
+
+GARBLED_GRID = [["Behavior", "m"], ["θyE þ 0.1ðdnl−θyEÞ", "9 \x03enl \x04"]]
+
+
+def garbled_table():
+    t = table("text_lines", GARBLED_GRID)
+    t.trust = "image"
+    t.suspect_spans = ["θyE þ 0.1ðdnl−θyEÞ", "9 \x03enl \x04"]
+    return t
+
+
+def test_suspect_cells_are_marked_in_the_table_input():
+    from app.ingest.pass2.jobs import grid_row
+    t = garbled_table()
+    cells = grid_row(t.rows[1], t.suspect_spans)["cells"]
+    assert all(c.get("suspect") for c in cells)
+    assert not grid_row(t.rows[0], t.suspect_spans)["cells"][0].get("suspect")
+
+
+def test_a_control_character_or_a_copied_suspect_span_fails_and_retries():
+    t = garbled_table()
+    copied = RowOut(row=1, conditions=["θyE þ 0.1ðdnl−θyEÞ"], values=[CellValue(col=1, value="9 \x03enl \x04",
+                                                                               number=9, unit=None, formula=None)])
+    issues = [i for i in v.check_table(result([copied]), t, t.rows) if i.code == "garbled_text"]
+    assert len(issues) == 3 and all(i.retry for i in issues)  # a control character, two copied spans
+    assert any("control" in i.detail for i in issues) and any("suspect cell" in i.detail for i in issues)
+    read = RowOut(row=1, conditions=["θyE + 0.1(dnl − θyE)"], values=[CellValue(col=1, value="9 (enl)", number=9,
+                                                                                unit=None, formula=None)])
+    assert "garbled_text" not in codes(v.check_table(result([read]), t, t.rows))
+
+
+def test_corrected_cells_keep_their_raw_text():
+    from app.graph.pass2_writers import cell_corrections
+    t = garbled_table()
+    read = RowOut(row=1, conditions=["Flexure", "θyE + 0.1(dnl − θyE)"],
+                  values=[CellValue(col=1, value="9 (enl)", number=9, unit=None, formula=None)])
+    got = {c["col"]: c for c in cell_corrections(t, t.rows, result([read]))}
+    assert got[1] == {"row": 1, "col": 1, "raw": "9 \x03enl \x04", "corrected": "9 (enl)", "where": "value"}
+    assert got[0]["corrected"] == "θyE + 0.1(dnl − θyE)" and got[0]["where"] == "conditions"
+
+
+def test_a_clause_answer_with_a_control_character_fails_but_quotes_may_hold_one():
+    issues = v.garbled_text(ClauseExtraction(parameters=[], equations=[], conditions=[], requirements=[], exceptions=[],
+                                             references=[], symbol_corrections=[], unmapped=[]))
+    assert issues == []
+    from app.ingest.pass2.schemas import ConditionOut
+    bad = ClauseExtraction(parameters=[], equations=[], conditions=[ConditionOut(text="when \x03x\x04 > 1",
+                                                                               source_quote="when \x03x\x04 > 1")],
+                           requirements=[], exceptions=[], references=[], symbol_corrections=[], unmapped=[])
+    issues = v.garbled_text(bad)
+    assert len(issues) == 1 and issues[0].detail.startswith("conditions[0].text")  # the quote itself is exempt
+
+
+def test_a_control_character_written_as_an_escape_is_garbled_too():
+    t = garbled_table()
+    escaped = RowOut(row=1, conditions=["Flexure"],
+                     values=[CellValue(col=1, value="9 " + "\\" + "u0003enl", number=9, unit=None, formula=None)])
+    assert "garbled_text" in codes(v.check_table(result([escaped]), t, t.rows))
+    fine = RowOut(row=1, conditions=["Flexure"],
+                  values=[CellValue(col=1, value="a " + "\\" + "u2212 b", number=9, unit=None, formula=None)])
+    assert not [i for i in v.garbled_text(result([fine])) if "control" in i.detail]

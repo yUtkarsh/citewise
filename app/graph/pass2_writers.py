@@ -212,11 +212,54 @@ def write_table(graph, outcome: Outcome) -> None:
     if left_out:  # rows this answer leaves out keep no values from an earlier answer
         graph.query("UNWIND $ids AS id MATCH (r:Row {id: id}) SET r.values = null, r.conditions = null",
                     {"ids": left_out})
+    if part == 1:
+        write_cell_corrections(graph, table, job.rows or table.rows, result, model, status)
     for rule in result.footnote_rules:
         graph.query("MATCH (:Table {id: $tid})-[:HAS_FOOTNOTE]->(f:Footnote {marker: $marker}) "
                     "SET f.rule_kind = $kind, f.rule = $rule, f.applies_to_rows = $rows, f.applies_to_cols = $cols",
                     {"tid": table.id, "marker": rule.marker, "kind": rule.kind, "rule": rule.rule,
                      "rows": rule.applies_to_rows, "cols": rule.applies_to_cols})
+
+
+def cell_corrections(table, rows, result: TableExtraction) -> list[dict]:
+    """Raw grid text and the answer's text for every suspect cell of the answered rows:
+    a value cell's corrected text is the value as read; a label cell's is the condition
+    that best matches it. Like a clause's symbol corrections, kept for review."""
+    from difflib import SequenceMatcher
+
+    from app.ingest.pass2.records import is_suspect_cell
+
+    by_index = {r.index: r for r in rows}
+    out = []
+    for answer in result.rows:
+        row = by_index.get(answer.row)
+        if row is None:
+            continue
+        values = {v.col: v.value for v in answer.values}
+        for col, raw in enumerate(row.cells):
+            if not raw.strip() or not is_suspect_cell(raw, table.suspect_spans):
+                continue
+            corrected = values.get(col)
+            if corrected is None and answer.conditions:
+                corrected = max(answer.conditions, key=lambda c: SequenceMatcher(None, raw, c).ratio())
+            if corrected is not None and corrected != raw:
+                out.append({"row": answer.row, "col": col, "raw": raw, "corrected": corrected,
+                            "where": "value" if col in values else "conditions"})
+    return out
+
+
+def write_cell_corrections(graph, table, rows, result: TableExtraction, model: str, status: str) -> None:
+    graph.query("MATCH (:Table {id: $id})-[:HAS_CORRECTION]->(c:SymbolCorrection) DETACH DELETE c", {"id": table.id})
+    g = GraphRows()
+    for c in cell_corrections(table, rows, result):
+        nid = f"{table.id}#r{c['row']}#c{c['col']}"
+        g.node("SymbolCorrection", {"id": nid, "raw": c["raw"], "corrected": c["corrected"], "uncertain": False,
+                                    "note": f"suspect grid cell (row {c['row']}, col {c['col']}) read from the image",
+                                    "target": c["where"], "line_id": None,
+                                    **pass2_provenance(table.pages[0] if table.pages else None, None, c["raw"], model,
+                                                       status)})
+        g.edge(("Table", table.id), "HAS_CORRECTION", ("SymbolCorrection", nid))
+    write(graph, g, indexes=False)
 
 
 def write_second_read(graph, outcome: Outcome) -> None:

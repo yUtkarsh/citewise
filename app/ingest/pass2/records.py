@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import json
+import re
 
 from app.ingest.pdf_lines import Rect
 from app.ingest.pass1.run_pass1 import Pass1Result
@@ -96,6 +97,44 @@ class TableRec:
     status: str = "skeleton"
     trust: str = "text"  # text: numbers must match the text layer; image: read from the image, read twice
     trust_reason: str = ""
+    suspect_spans: list[str] = field(default_factory=list)  # flagged text-layer lines inside the table
+
+
+GARBLED = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\ue000-\uf8ff\ufffd\U000f0000-\U0010ffff]")
+
+
+def _ws(text: str) -> str:
+    return " ".join((text or "").split())
+
+
+def table_suspect_spans(rows: list[RowRec], flagged: list[tuple[int, Rect, list[str], str]]) -> list[str]:
+    """The text of every flagged line (symbol warning, unmapped font, control character)
+    whose centre lies in the table's region on its page."""
+    regions: dict[int, Rect] = {}
+    for r in rows:
+        b = regions.get(r.page)
+        regions[r.page] = r.bbox if b is None else (min(b[0], r.bbox[0]), min(b[1], r.bbox[1]),
+                                                   max(b[2], r.bbox[2]), max(b[3], r.bbox[3]))
+    out = []
+    for page, box, _reasons, text in flagged:
+        region = regions.get(page)
+        if region is None or not _ws(text):
+            continue
+        cx, cy = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
+        if region[0] - 2 <= cx <= region[2] + 2 and region[1] - 2 <= cy <= region[3] + 2:
+            out.append(_ws(text))
+    return list(dict.fromkeys(out))
+
+
+def is_suspect_cell(text: str, spans: list[str]) -> bool:
+    """A grid cell whose text the text layer cannot be trusted for: it holds a control,
+    private-use or replacement character, or it is (part of) a flagged line."""
+    if GARBLED.search(text or ""):
+        return True
+    cell = _ws(text)
+    if not cell:
+        return False
+    return any(cell == s or s in cell or (len(cell) >= 3 and cell in s) for s in spans)
 
 
 def table_trust(rows: list[RowRec], flagged: list[tuple[int, Rect, list[str]]]) -> tuple[str, str]:
@@ -189,6 +228,7 @@ def from_pass1(result: Pass1Result, doc_id: str) -> Skeleton2:
             clauses[f.clause_id].flagged.append(FlagRec(f.id, f.page, _box(f.bbox), f.text, list(f.reasons)))
     tables = []
     flagged = [(f.page, _box(f.bbox), list(f.reasons)) for f in result.flagged]
+    flagged_text = [(f.page, _box(f.bbox), list(f.reasons), f.text) for f in result.flagged]
     for t in result.tables:
         method_on = {s.page: s.method for s in t.segments}
         rows = [RowRec(r.index, r.page, _box(r.bbox), list(r.cells), r.is_header,
@@ -198,7 +238,8 @@ def from_pass1(result: Pass1Result, doc_id: str) -> Skeleton2:
                                crops=[s.crop for s in t.segments if s.crop], header_crop=t.header_crop, rows=rows,
                                footnotes=[(f.marker, f.text) for f in t.footnotes], clause_id=t.clause_id,
                                referenced_by=list(dict.fromkeys(referenced_by.get(t.id, []))),
-                               trust=trust, trust_reason=reason))
+                               trust=trust, trust_reason=reason,
+                               suspect_spans=table_suspect_spans(rows, flagged_text)))
     return Skeleton2(doc_id=doc_id, clauses=sorted(clauses.values(), key=lambda c: c.order), tables=tables)
 
 
@@ -247,8 +288,9 @@ def from_graph(graph, doc_id: str) -> Skeleton2:
         clauses[cid].flagged.append(FlagRec(fid, page, _box(bbox), text, list(reasons or [])))
 
     tables = []
-    flagged = [(page, _box(bbox), list(reasons or [])) for page, bbox, reasons in _rows(
-        graph, "MATCH (f:FlaggedLine) RETURN f.page, f.bbox, f.reasons")]
+    flagged_text = [(page, _box(bbox), list(reasons or []), text or "") for page, bbox, reasons, text in _rows(
+        graph, "MATCH (f:FlaggedLine) RETURN f.page, f.bbox, f.reasons, f.text")]
+    flagged = [f[:3] for f in flagged_text]
     q = ("MATCH (t:Table) OPTIONAL MATCH (c:Clause)-[:CONTAINS]->(t) "
          "RETURN t.id, t.number, t.caption, t.pages, t.crops, t.header_crop, t.grid_method, c.id, t.status")
     for tid, num, caption, pages, crops, header_crop, methods, cid, status in _rows(graph, q):
@@ -265,6 +307,7 @@ def from_graph(graph, doc_id: str) -> Skeleton2:
                                crops=[c for c in (crops or []) if c], header_crop=header_crop, rows=rows,
                                footnotes=notes, clause_id=cid,
                                referenced_by=list(dict.fromkeys(referenced_by.get(tid, []))),
-                               status=status or "skeleton", trust=trust, trust_reason=reason))
+                               status=status or "skeleton", trust=trust, trust_reason=reason,
+                               suspect_spans=table_suspect_spans(rows, flagged_text)))
     tables.sort(key=lambda t: (t.pages[0] if t.pages else 0, t.id))
     return Skeleton2(doc_id=doc_id, clauses=sorted(clauses.values(), key=lambda c: c.order), tables=tables)

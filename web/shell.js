@@ -4,8 +4,12 @@
 const $ = (sel, root = document) => root.querySelector(sel);
 
 function storage(fn, fallback) { try { return fn(); } catch { return fallback; } }
+// Control, private-use and replacement characters (a text layer the font could not decode),
+// raw or written as \u escapes, show as ⟨?⟩ instead of vanishing.
+const GARBLED = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-�]|\\u00[01][0-9a-fA-F]|\\u[eE][0-9a-fA-F]{3}/g;
 function esc(s) {
-  return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  return String(s ?? "").replace(GARBLED, "⟨?⟩")
+    .replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 function cssVar(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
 function fmtInt(n) { return n == null ? "–" : Number(n).toLocaleString("en-US"); }

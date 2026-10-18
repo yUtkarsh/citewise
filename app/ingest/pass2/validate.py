@@ -26,7 +26,7 @@ SEVERITY = {
     "source_quote": "low", "unmapped": "low", "reference_unknown": "low", "footnote_unknown": "low",
     "bad_id": "low", "refused": "high", "equation_mismatch": "high", "equation_latex": "low",  # equation_latex: the checker could not verify
     "image_read": "low", "image_read_disagrees": "high", "equation_missing": "medium",
-    "value_column": "high", "row_missing": "high", "value_missing": "high",
+    "value_column": "high", "row_missing": "high", "value_missing": "high", "garbled_text": "high",
 }
 GRID_METHODS = {"docling", "find_tables"}  # grids whose cells are trusted for exact matching
 SHORT_EDIT_RAW, SHORT_EDIT_NEW = 2, 3  # character-level edit outside suspect text
@@ -608,6 +608,7 @@ def check_clause(result: ClauseExtraction, clause: ClauseRec, notation_ids: set[
     issues += [Issue("reference_unknown", f"reference {r.text[:80]!r} is not in the references list", retry=False)
                for r in result.references if norm_text(r.text) not in known_refs]
     issues += [Issue("unmapped", f"{u.kind}: {u.text[:120]}", retry=False) for u in result.unmapped]
+    issues += garbled_text(result)  # control, private-use or replacement characters outside quotes
     return ClauseCheck(issues, corrected if placed else None, accepted)
 
 
@@ -753,6 +754,56 @@ def grid_numbers_missing(out, row: RowRec, headers: list[str], band: list[str] |
     return list(dict.fromkeys(missing))
 
 
+GARBLED_CHAR = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\ue000-\uf8ff\ufffd\U000f0000-\U0010ffff]"
+                          # the same characters written out as JSON escapes ('\u0003' as six characters)
+                          r"|\\u00[01][0-9a-fA-F]|\\u007[fF]|\\u[eE][0-9a-fA-F]{3}|\\u[fF][0-8][0-9a-fA-F]{2}"
+                          r"|\\u[fF][fF][fF][dD]")
+QUOTE_FIELDS = {"source_quote", "raw"}  # quotes of the text layer: garbled text is allowed there
+COPY_WINDOW = 5
+
+
+def _strings(value, path: str = ""):
+    """(path, text) of every string in a Pass 2 answer, except quotes of the text layer."""
+    if isinstance(value, dict):
+        for k, x in value.items():
+            if k not in QUOTE_FIELDS:
+                yield from _strings(x, f"{path}.{k}" if path else k)
+    elif isinstance(value, list):
+        for i, x in enumerate(value):
+            yield from _strings(x, f"{path}[{i}]")
+    elif isinstance(value, str):
+        yield path, value
+
+
+def _odd(ch: str) -> bool:
+    """A character a font-mapping fault produces: control, private use, replacement, or
+    a Latin-1 letter (a math font can map '+' to 'þ', parentheses to 'ð' and 'Þ')."""
+    return bool(GARBLED_CHAR.match(ch)) or ("\u00c0" <= ch <= "\u00ff" and ch not in "×÷")
+
+
+def garbled_text(result, spans: list[str] | None = None) -> list[Issue]:
+    """A control, private-use or replacement character anywhere in the answer, or text
+    copied verbatim from a suspect span (a stretch of it that holds an odd character)."""
+    issues = []
+    strings = list(_strings(result.model_dump(mode="json")))
+    for path, text in strings:
+        if m := GARBLED_CHAR.search(text):
+            issues.append(Issue("garbled_text", f"{path}: {text[max(0, m.start() - 15):m.end() + 15]!r} holds a control, "
+                                                f"private-use or replacement character; transcribe it from the image"))
+    for span in spans or []:
+        windows = {span[i:i + COPY_WINDOW] for i in range(max(0, len(span) - COPY_WINDOW + 1))
+                   if any(_odd(c) for c in span[i:i + COPY_WINDOW])}
+        if not windows:
+            continue
+        for path, text in strings:
+            flat = " ".join(text.split())
+            if any(w in flat for w in windows):
+                issues.append(Issue("garbled_text", f"{path}: copies the grid text of a suspect cell ({span[:40]!r}); "
+                                                    f"transcribe it from the image, never copy the grid text"))
+                break
+    return list({i.detail: i for i in issues}.values())[:12]
+
+
 def value_columns(result: TableExtraction) -> list[Issue]:
     """Every value must sit in a column that a header parameter names, or nothing says
     what the number is. One issue per row, listing its stray columns."""
@@ -801,6 +852,7 @@ def check_table(result: TableExtraction, table: TableRec, rows: list[RowRec],
                     issues.append(Issue("sympy_parse", f"row {out.row}, col {value.col}: formula "
                                                        f"{value.formula[:80]!r}: {exc}"))
     issues += value_columns(result)
+    issues += garbled_text(result, table.suspect_spans)
     headers = column_headers(rows)
     if table.trust == "text":  # image-trust tables: the text layer is not the reference
         for out in result.rows:

@@ -103,11 +103,15 @@ def clause_job(clause: ClauseRec, skel: Skeleton2, notation: NotationDict, pdf_h
 
 # ---- tables ---------------------------------------------------------------------
 
-def grid_row(row: RowRec) -> dict:
+def grid_row(row: RowRec, spans: list[str] | None = None) -> dict:
     """A grid row as explicit (col, text) pairs for its non-empty cells: the column
-    index Claude reports is the grid's, whatever the image's layout looks like."""
+    index Claude reports is the grid's, whatever the image's layout looks like. A cell
+    the text layer cannot be trusted for is marked ``suspect`` (read it from the image)."""
+    from app.ingest.pass2.records import is_suspect_cell
+
     return {"row": row.index, "header": row.is_header,
-            "cells": [{"col": c, "text": text} for c, text in enumerate(row.cells) if text.strip()]}
+            "cells": [{"col": c, "text": text, **({"suspect": True} if is_suspect_cell(text, spans or []) else {})}
+                      for c, text in enumerate(row.cells) if text.strip()]}
 
 
 def table_parts(table: TableRec) -> list[list[RowRec]]:
@@ -137,7 +141,7 @@ def table_jobs(table: TableRec, skel: Skeleton2, notation: NotationDict) -> list
         payload = {
             "table": {"id": table.id, "number": table.number, "caption": table.caption},
             "part": f"{n + 1} of {len(parts)}" if len(parts) > 1 else None,
-            "grid": [grid_row(r) for r in rows],
+            "grid": [grid_row(r, table.suspect_spans) for r in rows],
             "footnotes": [{"marker": m, "text": t} for m, t in table.footnotes],
             "notation": [{"id": e.id, "symbol": e.display, "aliases": e.aliases, "description": e.description,
                           "units": e.units} for e in entries],
