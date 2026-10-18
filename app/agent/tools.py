@@ -117,7 +117,10 @@ TOOLS: list[dict] = [
          "unit": {"type": ["string", "null"]},
          "source": {"type": "string", "enum": list(SOURCES),
                     "description": "matched_row only for a value compute mapped from a matched row; agent_selected "
-                                   "for a value you picked (from an unmapped row, or from calculate)"},
+                                   "for a value you picked (from an unmapped row, or from calculate); from_clause "
+                                   "for a value a clause's text states outright (give clause)"},
+         "clause": {"type": ["string", "null"],
+                    "description": "from_clause only: id of the clause whose text states the value"},
          "label": {"type": ["string", "null"],
                    "description": "How the code writes the quantity, when it is a condition's expression"}},
          ["id", "value", "source"])}}, ["facts"])},
@@ -170,6 +173,22 @@ class Toolbox:
                 return f"the user did not give {fid} = {value}"
         if source == "assumed" and not self.accepts_assumed:
             return "the user has not accepted typical values"
+        return None
+
+    def check_clause(self, value, clause: str | None) -> str | None:
+        """Why a from_clause value cannot stand, or None: the clause must exist and its text
+        must contain the number."""
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return "from_clause takes a number"
+        if not clause:
+            return "from_clause needs the clause id"
+        rows = self.graph.ro_query("MATCH (c:Clause {id: $id}) RETURN c.text", {"id": clause}).result_set
+        if not rows:
+            return f"no clause {clause}"
+        if not any(abs(n - number) <= 1e-9 * max(1.0, abs(number)) for n in numbers(rows[0][0] or "")):
+            return f"clause {clause} does not state {value}"
         return None
 
     def run(self, name: str, args: dict) -> ToolResult:
@@ -262,6 +281,10 @@ class Toolbox:
             if not trusted and (why := self.check_source(fid, item["value"], item.get("source", "user"))):
                 item = {**item, "source": "agent_selected"}
                 refused.append(f"{fid} saved as agent_selected ({why})")
+            clause = str(item.get("clause") or "").lstrip("§ ").strip() or None
+            if item.get("source") == "from_clause" and (why := self.check_clause(item["value"], clause)):
+                item = {**item, "source": "agent_selected"}
+                refused.append(f"{fid} saved as agent_selected ({why})")
             if item.get("source") == "matched_row":  # only a value compute mapped from a matched row
                 try:
                     number = float(item["value"])
@@ -273,13 +296,16 @@ class Toolbox:
             label = item.get("label") or (str(item["id"]) if fid != str(item["id"]) else None)
             fact = Fact(id=fid, value=item["value"], unit=item.get("unit"),
                         source=item.get("source", "user"), label=label,
-                        kind="parameter" if is_param else "descriptor")
+                        kind="parameter" if is_param else "descriptor",
+                        clause=clause if item.get("source") == "from_clause" else None)
             previous = self.store.set(fact)
             saved.append(fact.display())
             if fact.source == "assumed":
                 labels.append(Label(fact.id, "assumed", "a typical value the user accepted, not from the code"))
             if fact.source == "agent_selected":
                 labels.append(Label(fact.id, "inputs selected by agent", "a value the agent picked, not mapped by compute"))
+            if fact.source == "from_clause":
+                labels.append(Label(fact.id, fact.tag, f"the text of clause {fact.clause} states this value"))
             if previous is not None and (previous.value, previous.unit) != (fact.value, fact.unit):
                 changes.append((previous, fact))
         result = ToolResult(f"saved {len(saved)} facts" + (f", {len(changes)} changed" if changes else "")

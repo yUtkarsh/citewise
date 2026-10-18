@@ -141,6 +141,8 @@ def facts_event(agent: Agent) -> dict:
                 "unit": f.unit, "source": f.source}
         if f.label and f.source == "matched_row":
             item["note"] = f.label
+        if f.source == "from_clause":
+            item["note"] = f.tag
         out.append(item)
     return {"facts": out}
 

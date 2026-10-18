@@ -1,6 +1,7 @@
 """Session facts: the values the agent computes with. ``compute`` reads only these, so
-every number in an answer traces back to a fact the user gave, a matched row, or a
-typical value the user accepted (SPEC Step 6).
+every number in an answer traces back to a fact the user gave, a matched row, a value
+stated outright in a clause's text (``from_clause``, with the clause id), or a typical
+value the user accepted (SPEC Step 6).
 
 ``FactStore`` is the interface; ``MemoryFacts`` keeps facts in process (tests, and the
 CLI before the memory graph exists); ``app.memory`` adds the FalkorDB-backed store.
@@ -10,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from typing import Protocol
 
-SOURCES = ("user", "matched_row", "assumed", "agent_selected")
+SOURCES = ("user", "matched_row", "assumed", "agent_selected", "from_clause")
 
 
 @dataclass
@@ -21,12 +22,18 @@ class Fact:
     source: str = "user"
     label: str | None = None  # how the user or the code wrote it, e.g. "V/(bw d sqrt(f'c))"
     kind: str = "parameter"  # parameter (a node in the code graph) / descriptor
+    clause: str | None = None  # from_clause: the clause whose text states the value
+
+    @property
+    def tag(self) -> str:
+        if self.source == "from_clause":
+            return f"stated in §{self.clause}"
+        return {"user": "from you", "matched_row": "matched row", "assumed": "assumed",
+                "agent_selected": "selected by agent"}.get(self.source, self.source)
 
     def display(self) -> str:
         unit = f" {self.unit}" if self.unit else ""
-        tag = {"user": "from you", "matched_row": "matched row", "assumed": "assumed",
-               "agent_selected": "selected by agent"}.get(self.source, self.source)
-        return f"{self.id} = {self.value}{unit} ({tag})"
+        return f"{self.id} = {self.value}{unit} ({self.tag})"
 
     def number(self) -> float | None:
         try:

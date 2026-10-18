@@ -57,3 +57,23 @@ def test_direct_saves_by_the_user_keep_their_source(code_graph):
     assert box.store.all()["W"].source == "agent_selected"
     box.save_facts([{"id": "kind", "value": "frame", "source": "user"}])  # a choice in words is not checked
     assert box.store.all()["kind"].source == "user"
+
+
+def test_a_value_stated_in_a_clause_is_saved_from_clause_and_labelled(code_graph):
+    facts = [{"id": "C", "value": 1.3, "source": "from_clause", "clause": "1.2"},  # clause 1.2's text has 1.3
+             {"id": "h", "value": 2.5, "source": "from_clause", "clause": "1.2"},  # it does not have 2.5
+             {"id": "R", "value": 3, "source": "from_clause", "clause": "9.9"},
+             {"id": "W", "value": 2400, "source": "user"}]
+    script = Script([tool("save_session_facts", 1, facts=facts)],
+                    [tool("compute", 2, target="Equation 1-1")], [text("ok")])
+    a = agent(code_graph, script)
+    turn = a.ask("Weight W = 2,400 kips. What is V?")
+    store = a.toolbox.store.all()
+    assert store["C"].source == "from_clause" and store["C"].clause == "1.2"
+    assert store["C"].display() == "C = 1.3 (stated in §1.2)"
+    assert store["h"].source == "agent_selected" and store["R"].source == "agent_selected"
+    saved = turn.calls[0].result
+    assert "clause 1.2 does not state 2.5" in saved.summary and "no clause 9.9" in saved.summary
+    assert any(x.target == "C" and x.label == "stated in §1.2" for x in saved.labels)
+    computed = turn.calls[1].result  # the label follows the value into the answer's computation
+    assert computed.data["computed"] and any(x.label == "stated in §1.2" for x in computed.labels)

@@ -40,8 +40,8 @@ class MemoryGraph:
 
     def all(self) -> dict[str, Fact]:
         rows = self.g.ro_query("MATCH (:Session {id: $s})-[a:ASSUMES]->(n) RETURN n.id, a.value, a.unit, a.source, "
-                               "a.label, a.kind ORDER BY a.updated", {"s": self.session}).result_set
-        return {i: Fact(i, v, u, src, lab, kind or "parameter") for i, v, u, src, lab, kind in rows}
+                               "a.label, a.kind, a.clause ORDER BY a.updated", {"s": self.session}).result_set
+        return {i: Fact(i, v, u, src, lab, kind or "parameter", clause) for i, v, u, src, lab, kind, clause in rows}
 
     def set(self, fact: Fact) -> Fact | None:
         previous = self.all().get(fact.id)
@@ -49,10 +49,10 @@ class MemoryGraph:
         self.g.query(f"MATCH (s:Session {{id: $s}}) MERGE (n:{label} {{key: $key}}) "
                      "ON CREATE SET n.id = $id, n.graph = $graph "
                      "MERGE (s)-[a:ASSUMES]->(n) SET a.value = $value, a.unit = $unit, a.source = $source, "
-                     "a.label = $label, a.kind = $kind, a.updated = $t",
+                     "a.label = $label, a.kind = $kind, a.clause = $clause, a.updated = $t",
                      {"s": self.session, "key": self._key(fact.id), "id": fact.id, "graph": self.code,
                       "value": fact.value, "unit": fact.unit, "source": fact.source, "label": fact.label,
-                      "kind": fact.kind, "t": time.time()})
+                      "kind": fact.kind, "clause": fact.clause, "t": time.time()})
         return previous
 
     def match_row(self, match: RowMatch) -> None:

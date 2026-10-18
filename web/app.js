@@ -434,7 +434,8 @@ function costLine(cost) {
 
 // ---- facts panel -------------------------------------------------------------------------------
 
-const SOURCE_TEXT = { user: "from you", matched_row: "matched row", assumed: "assumed", agent_selected: "selected by agent" };
+const SOURCE_TEXT = { user: "from you", matched_row: "matched row", assumed: "assumed", agent_selected: "selected by agent",
+  from_clause: "stated in clause" };
 
 function setFacts(facts) {
   state.facts = facts.map((f) => ({ ...f }));
