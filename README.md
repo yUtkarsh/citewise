@@ -126,7 +126,7 @@ uvicorn app.api.main:app --port 8000
 python -m scripts.load_graph
 ```
 
-This restores the `code_fema356` graph from `export/` (12,932 nodes and 21,217 edges, with
+This restores the `code_fema356` graph from `export/` (12,928 nodes and 21,213 edges, with
 search indexes and embeddings) and checks its checksum before loading and its node and edge
 counts after. It then unpacks the equation, table and clause images
 (`export/code_fema356_crops.zip`, 443 PNGs) into `data/crops/`, keeping files already
@@ -352,8 +352,8 @@ node carries `page`, `bbox`, `source_quote`, `confidence`, `extraction_method`,
 `extracted` or `flagged`) and `flags`.
 
 The shipped FEMA 356 graph (`export/code_fema356.manifest.json`) has 1,883 clauses, 236
-equations, 101 tables with 2,022 rows, 729 parameters, 237 terms and 3,012 references, out of
-12,932 nodes and 21,217 edges. The document's 518 pages are 99.5% covered by the clause text
+equations, 101 tables with 2,018 rows, 729 parameters, 237 terms and 3,012 references, out of
+12,928 nodes and 21,213 edges. The document's 518 pages are 99.5% covered by the clause text
 (the `Document` node's `coverage`).
 
 **Code graph nodes**
