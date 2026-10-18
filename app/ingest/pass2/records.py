@@ -80,6 +80,7 @@ class RowRec:
     is_header: bool
     grid_method: str
     markers: list[str] = field(default_factory=list)
+    cell_markers: dict[int, list[str]] = field(default_factory=dict)  # superscripts stripped from value cells
 
 
 @dataclass
@@ -297,10 +298,10 @@ def from_graph(graph, doc_id: str) -> Skeleton2:
          "t.text_numbers")
     for tid, num, caption, pages, crops, header_crop, methods, cid, status, text_numbers in _rows(graph, q):
         rows = [RowRec(index, page, _box(bbox), json.loads(cells), is_header, method or (methods or [""])[0],
-                       list(markers or []))
-                for index, page, bbox, cells, is_header, method, markers in _rows(
+                       list(markers or []), {int(c): m for c, m in json.loads(cell_markers or "{}").items()})
+                for index, page, bbox, cells, is_header, method, markers, cell_markers in _rows(
                     graph, "MATCH (:Table {id: $id})-[:HAS_ROW]->(r:Row) RETURN r.index, r.page, r.bbox, r.cells, "
-                           "r.is_header, r.grid_method, r.markers ORDER BY r.index", {"id": tid})]
+                           "r.is_header, r.grid_method, r.markers, r.cell_markers ORDER BY r.index", {"id": tid})]
         notes = [(m, text) for m, text in _rows(
             graph, "MATCH (:Table {id: $id})-[:HAS_FOOTNOTE]->(f:Footnote) RETURN f.marker, f.text ORDER BY f.id",
             {"id": tid})]

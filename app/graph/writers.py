@@ -87,6 +87,7 @@ def build_rows(result: Pass1Result, profile: Profile, doc_id: str, file_hash: st
             rid = f"{t.id}#r{row.index}"
             g.node("Row", {"id": rid, "index": row.index, "cells": json.dumps(row.cells, ensure_ascii=False),
                            "is_header": row.is_header, "markers": row.markers,
+                           "cell_markers": json.dumps({str(c): m for c, m in row.cell_markers.items()}),
                            "grid_method": method_on.get(row.page, first.method),
                            **provenance(row.page, row.bbox, " | ".join(c for c in row.cells if c), first.method)})
             g.edge(("Table", t.id), "HAS_ROW", ("Row", rid), {"index": row.index})

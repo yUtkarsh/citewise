@@ -175,3 +175,40 @@ def footnote_markers(lines: list, fmt: FootnoteFormat) -> set[str]:
 def is_footnote_reference(marker: str, scope_markers: set[str]) -> bool:
     """True if a footnote with this marker exists in the marker's scope."""
     return marker in scope_markers
+
+
+def value_superscripts(line, marker_regex: str = DEFAULT_MARKER) -> list[tuple[str, str]]:
+    """(marker, text before it) for every small raised marker right after a digit: a
+    footnote reference printed on a number ("3000-10,000" with a raised "2"), which a
+    table grid otherwise reads as part of the number."""
+    spans = line_spans(line)
+    out = []
+    for prev, span in zip(spans, spans[1:]):
+        text, before = span_text(span).strip(), span_text(prev).rstrip()
+        if not text or not before or not before[-1].isdigit():
+            continue
+        if not all(re.fullmatch(marker_regex, p.strip()) for p in text.split(",")):
+            continue
+        flagged = bool(span["flags"] & SUPERSCRIPT_FLAG)
+        raised = span["origin"][1] < prev["origin"][1] - 0.5
+        if (flagged and raised) or (span["size"] < prev["size"] * SMALL_SIZE_RATIO and raised):
+            out.append((text, before))
+    return out
+
+
+def strip_value_markers(cells: list[str], found: list[tuple[str, str]]) -> tuple[list[str], dict[int, list[str]]]:
+    """Cells with superscript markers that the grid glued onto a number removed, and the
+    markers by column. A cell is changed only if, spaces and thousands commas ignored, it
+    ends with the number printed before the marker followed by the marker."""
+    norm = lambda s: re.sub(r"[\s,]", "", s)  # noqa: E731
+    cells, by_col = list(cells), {}
+    for marker, before in found:
+        tail = norm(before.split()[-1]) if before.split() else ""
+        for col, cell in enumerate(cells):
+            if tail and norm(cell).endswith(tail + norm(marker)) and col not in by_col:
+                stripped = cell.rstrip()
+                cells[col] = stripped[:len(stripped) - len(marker)].rstrip() if stripped.endswith(marker) else cell
+                if cells[col] != cell:
+                    by_col.setdefault(col, []).append(marker)
+                    break
+    return cells, by_col

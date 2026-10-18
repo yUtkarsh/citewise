@@ -70,6 +70,7 @@ class Row:
     cells: list[str]
     is_header: bool
     markers: list[str] = field(default_factory=list)
+    cell_markers: dict[int, list[str]] = field(default_factory=dict)  # col -> superscripts stripped from it
 
 
 @dataclass

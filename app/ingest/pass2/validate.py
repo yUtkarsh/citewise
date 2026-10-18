@@ -27,6 +27,7 @@ SEVERITY = {
     "bad_id": "low", "refused": "high", "equation_mismatch": "high", "equation_latex": "low",  # equation_latex: the checker could not verify
     "image_read": "low", "image_read_disagrees": "high", "equation_missing": "medium",
     "value_column": "high", "row_missing": "high", "value_missing": "high", "garbled_text": "high",
+    "footnote_in_value": "high",
 }
 GRID_METHODS = {"docling", "find_tables"}  # grids whose cells are trusted for exact matching
 SHORT_EDIT_RAW, SHORT_EDIT_NEW = 2, 3  # character-level edit outside suspect text
@@ -735,6 +736,17 @@ def _not_a_value(text: str, conds: str, header: str = "") -> bool:
             or bool(ITEM_NUMBER.match(text)) or (bool(_cond_key(text)) and _cond_key(text) in conds))
 
 
+def _without_cell_marker(word: str, row: RowRec) -> str:
+    """A text-layer word with a raised footnote marker glued on ('20007' for '2000' and
+    marker 7) loses the marker when the rest is a number printed in the row's cells."""
+    cell_numbers = {n for cell in row.cells for n in numbers(cell)}
+    for marker in {m for ms in row.cell_markers.values() for m in ms}:
+        rest = word.rstrip()[:-len(marker)] if word.rstrip().endswith(marker) else None
+        if rest and numbers(rest) and all(n in cell_numbers for n in numbers(rest)):
+            return rest
+    return word
+
+
 def grid_numbers_missing(out, row: RowRec, headers: list[str], band: list[str] | None = None,
                          markers: set[str] | frozenset = frozenset()) -> list[str]:
     """Numbers printed in the row that the answer's values for the row leave out: in its
@@ -748,7 +760,7 @@ def grid_numbers_missing(out, row: RowRec, headers: list[str], band: list[str] |
     conds = _cond_key(" ".join(out.conditions))
     missing = []
     texts = [(f"col {c}", cell, headers[c] if c < len(headers) else "") for c, cell in enumerate(row.cells)]
-    texts += [("text", word, "") for word in band or []]
+    texts += [("text", _without_cell_marker(word, row), "") for word in band or []]
     for where, text, header in texts:
         if _not_a_value(text, conds, header) or (where == "text" and text.strip() in markers):
             continue  # a footnote marker printed as its own word is not a value
@@ -824,6 +836,22 @@ def value_columns(result: TableExtraction) -> list[Issue]:
     return issues
 
 
+def footnote_in_value(value, row: RowRec) -> Issue | None:
+    """A value that ends with the digits of a footnote marker printed raised on that
+    cell (``cell_markers``), where the cell without the marker does not: '3000-100002'
+    read from '3000-10,000' with a raised '2'."""
+    cell = row.cells[value.col] if 0 <= value.col < len(row.cells) else ""
+    flat = lambda s: re.sub(r"[\s,]", "", s or "")  # noqa: E731
+    for marker in row.cell_markers.get(value.col, []):
+        texts = [flat(value.value)] + ([f"{value.number:g}"] if value.number is not None else [])
+        if any(t.endswith(marker) and t[:-len(marker)][-1:].isdigit() and not flat(cell).endswith(t)
+               for t in texts if len(t) > len(marker)):
+            return Issue("footnote_in_value", f"row {row.index} col {value.col}: {value.value!r} ends with "
+                         f"footnote marker {marker!r}, printed raised in the PDF; the value is {cell!r} and the "
+                         f"marker refers to footnote {marker}")
+    return None
+
+
 def check_table(result: TableExtraction, table: TableRec, rows: list[RowRec],
                 bands: dict[int, list[str]] | None = None) -> list[Issue]:
     """``bands``: row index -> the words of the text layer in that row's band (optional)."""
@@ -846,6 +874,8 @@ def check_table(result: TableExtraction, table: TableRec, rows: list[RowRec],
             if not 0 <= value.col < len(row.cells):
                 issues.append(Issue("grid_dimension", f"row {out.row} has no column {value.col}"))
                 continue
+            if issue := footnote_in_value(value, row):
+                issues.append(issue)
             if (issue := number_issue(value, row, table)) and table.trust == "text":
                 issues.append(issue)  # text-trust tables: the text layer is the reference
                 number_rows.add(out.row)

@@ -110,7 +110,8 @@ def grid_row(row: RowRec, spans: list[str] | None = None) -> dict:
     from app.ingest.pass2.records import is_suspect_cell
 
     return {"row": row.index, "header": row.is_header,
-            "cells": [{"col": c, "text": text, **({"suspect": True} if is_suspect_cell(text, spans or []) else {})}
+            "cells": [{"col": c, "text": text, **({"suspect": True} if is_suspect_cell(text, spans or []) else {}),
+                       **({"footnotes": row.cell_markers[c]} if row.cell_markers.get(c) else {})}
                       for c, text in enumerate(row.cells) if text.strip()]}
 
 

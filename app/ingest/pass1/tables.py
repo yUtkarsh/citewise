@@ -430,7 +430,8 @@ def _norm(row: list[str]) -> str:
 
 def build_rows(table: Table, page_lines: dict[int, list[Line]], marker_regex: str = tc.DEFAULT_MARKER) -> None:
     """Rows in page order; header rows repeated on continuation pages are dropped.
-    Row markers are superscripts inside the row (footnote references)."""
+    Row markers are superscripts inside the row (footnote references). A marker raised
+    on a number in a body cell is stripped from the cell and kept in ``cell_markers``."""
     first = table.segments[0]
     headers = {_norm(r) for r in first.rows[:first.header_rows]}
     index = 0
@@ -439,10 +440,13 @@ def build_rows(table: Table, page_lines: dict[int, list[Line]], marker_regex: st
             is_header = i < seg.header_rows
             if n and (is_header or _norm(cells) in headers):
                 continue  # repeated header on a continuation page
-            markers = [m for line in page_lines.get(seg.page, []) if _centre_in(line.bbox, box)
-                       for m, _ in tc.superscripts(line, marker_regex)]
-            table.rows.append(Row(index=index, page=seg.page, bbox=box, cells=cells,
-                                  is_header=is_header, markers=sorted(set(markers))))
+            inside = [line for line in page_lines.get(seg.page, []) if _centre_in(line.bbox, box)]
+            markers = [m for line in inside for m, _ in tc.superscripts(line, marker_regex)]
+            cells, cell_markers = (cells, {}) if is_header else tc.strip_value_markers(
+                cells, [x for line in inside for x in tc.value_superscripts(line, marker_regex)])
+            markers += [m for ms in cell_markers.values() for m in ms]
+            table.rows.append(Row(index=index, page=seg.page, bbox=box, cells=cells, is_header=is_header,
+                                  markers=sorted(set(markers)), cell_markers=cell_markers))
             index += 1
 
 
