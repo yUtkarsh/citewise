@@ -70,7 +70,12 @@ TOOLS: list[dict] = [
                      "description": "Table only: return only these header parameter ids"},
          "save_as_facts": {"type": "boolean",
                            "description": "Table only: store the row's values as facts (source matched_row) "
-                                          "to use them as equation inputs"}}, ["target"])},
+                                          "to use them as equation inputs"},
+         "resolve_inputs": {"type": "boolean",
+                            "description": "Equation only: compute missing inputs from the equations and tables "
+                                           "that supply them (recursively, when the facts leave no choice) and "
+                                           "return every intermediate value with its source, or what is still "
+                                           "missing and why"}}, ["target"])},
     {"name": "calculate",
      "description": "Only when compute cannot map a table's values itself (for example a value in a column "
                     "chosen by its header, or interpolation between columns): you cite every input and the "
@@ -199,6 +204,9 @@ class Toolbox:
                 if v.get("param") and v.get("number") is not None:
                     self.mapped.add((v["param"], float(v["number"])))
             return result
+        if a.get("resolve_inputs"):
+            from app.agent.chain import compute_chained
+            return compute_chained(self.graph, target, self.facts(), a.get("solve_for"))
         return compute_equation(self.graph, target, self.facts(), a.get("solve_for"))
 
     def parameter_id(self, given: str) -> tuple[str, bool]:
