@@ -82,3 +82,16 @@ def test_a_parameter_with_many_sources_keeps_the_nearest_and_counts_the_rest(cod
         assert "2 sources" in d["why"]
     finally:
         code_graph.query("MATCH (e:Equation {id: 'Equation 9-1'}) DETACH DELETE e")
+
+
+def test_a_text_goal_prefers_a_clause_whose_title_matches_and_lists_alternatives(code_graph):
+    r = plan_procedure(code_graph, "steps to get the base shear of a building", {})
+    assert r.data["goal"]["id"] == "1.2" and r.data["goal"]["resolved_from"].startswith("steps to")
+    assert len(r.data["other_goal_candidates"]) <= 3 and "1.2" not in [a["id"] for a in r.data["other_goal_candidates"]]
+    assert "resolved to Clause 1.2" in r.summary
+
+
+def test_a_small_plan_from_text_tells_the_model_to_retry_with_a_clause_id(code_graph):
+    r = plan_procedure(code_graph, "story force", {})
+    assert len(r.data["steps"]) < 6 and "again with a clause id" in r.summary
+    assert "retry" not in plan_procedure(code_graph, "1.3", {}).data  # an id goal is taken as given

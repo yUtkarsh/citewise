@@ -26,11 +26,12 @@ from __future__ import annotations
 
 from collections import defaultdict
 import json
+import re
 
 from app.agent.facts import Fact
 from app.agent.graph_tools import find_node
 from app.agent.results import ToolResult, Touched, edge_label, node_label
-from app.agent.search import find_entry
+from app.agent.search import STOPWORDS, find_entry
 
 MAX_DEPTH = 4
 MAX_NODES = 90
@@ -39,6 +40,12 @@ MAX_SOURCES = 3  # computing equations and giving tables per parameter
 STEP_LABELS = ("Clause", "Table", "Equation")
 DEP_TYPES = ["requires", "uses_value_from"]
 DECISION_TYPES = ["alternative_to", "exception_to"]
+ALTERNATIVES_SHOWN = 3
+MIN_SHARED, MIN_COVERAGE = 2, 0.6  # a clause title matches a text goal
+SMALL_PLAN = 6  # fewer steps than this from a text goal: tell the model to retry with a clause id
+GOAL_STOPWORDS = STOPWORDS | {"evaluate", "evaluating", "evaluation", "existing", "calculate", "calculating",
+                              "determine", "procedure", "step", "steps", "wise", "using", "how", "get", "find",
+                              "building", "built"}
 
 # label -> Cypher returning (dependency label, dependency node, edge src, edge type, edge dst, edge)
 DEPENDS_ON = {
@@ -81,15 +88,45 @@ def _title(label: str, p: dict) -> str:
     return (p.get("title") or p.get("caption") or p.get("description") or "")[:140]
 
 
+def _words(text: str) -> set[str]:
+    words = {w.lower() for w in re.findall(r"[A-Za-z]+", text or "")}
+    return {w[:-1] if len(w) > 3 and w.endswith("s") else w for w in words - GOAL_STOPWORDS if len(w) > 1}
+
+
+def title_matches(graph, goal: str) -> list[dict]:
+    """Clauses whose title the goal covers: at least MIN_SHARED title words appear in the
+    goal and they make up at least MIN_COVERAGE of the title. Best first: more shared
+    words, fuller cover, provisions before commentary, shallower clauses."""
+    want = _words(goal)
+    out = []
+    for cid, title, stream, depth, page in graph.ro_query(
+            "MATCH (c:Clause) WHERE c.title IS NOT NULL RETURN c.id, c.title, c.stream, c.depth, c.page").result_set:
+        have = _words(title)
+        shared = want & have
+        if len(shared) >= MIN_SHARED and len(shared) / len(have) >= MIN_COVERAGE:
+            out.append({"label": "Clause", "id": cid, "title": title, "page": page,
+                        "why": f"title matches the goal ({', '.join(sorted(shared))})",
+                        "_rank": (-len(shared), -len(shared) / len(have), stream == "commentary", depth or 9, cid)})
+    return sorted(out, key=lambda x: x["_rank"])
+
+
 def resolve_goal(graph, goal: str, encode) -> tuple[tuple[str, dict] | None, list[dict]]:
+    """A node id resolves to itself. Free text goes through find_entry, and a clause whose
+    title matches the goal is preferred over the search's top hit. Returns the goal and
+    up to three alternatives."""
     found = find_node(graph, goal)
     if found:
         return found, []
-    hits = find_entry(graph, goal, encode, labels=["Table", "Equation", "Clause", "Parameter"]).data["candidates"]
-    if not hits:
+    hits = [{**h, "why": "find_entry " + "+".join(h.get("matched_by", []))} for h in find_entry(
+        graph, goal, encode, k=12, labels=["Table", "Equation", "Clause", "Parameter"]).data["candidates"]]
+    ranked, seen = [], set()
+    for c in title_matches(graph, goal)[:6] + hits:
+        if c["id"] not in seen:
+            seen.add(c["id"])
+            ranked.append({k: v for k, v in c.items() if k in ("label", "id", "title", "caption", "symbol", "why")})
+    if not ranked:
         return None, []
-    top = find_node(graph, hits[0]["id"])
-    return top, hits[1:6]
+    return find_node(graph, ranked[0]["id"]), ranked[1:1 + ALTERNATIVES_SHOWN]
 
 
 def walk(graph, start: tuple[str, str], t: Touched, labels: list, source_counts: dict | None = None):
@@ -276,4 +313,13 @@ def plan_procedure(graph, goal: str, facts: dict[str, Fact], encode=None) -> Too
             "note": "steps come from the graph's links only; if a step you expect is missing, the graph does not "
                     "link it here: find it with find_entry and say so"}
     summary = f"{len(steps)} steps to {root_key[1]}, {len(decisions)} decisions, {len(missing)} inputs needed"
+    if root_key[1] != goal:  # resolved from text: say what was chosen and what else fits
+        data["goal"]["resolved_from"] = goal
+        summary += f"; goal {goal!r} resolved to {root_key[0]} {root_key[1]} ({data['goal']['title'][:60]})"
+        if alternatives:
+            summary += "; alternatives: " + ", ".join(a["id"] for a in alternatives)
+        if len(steps) < SMALL_PLAN:
+            data["retry"] = (f"only {len(steps)} steps: if that looks too small for the question, call plan_procedure "
+                             "again with a clause id as the goal (an alternative above, or one found with find_entry)")
+            summary += f". {data['retry']}"
     return ToolResult(summary, data, t, list({(x.target, x.label): x for x in labels}.values()))
