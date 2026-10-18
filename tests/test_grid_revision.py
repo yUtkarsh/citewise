@@ -150,3 +150,16 @@ def test_a_grid_wrong_note_is_recognised():
     assert grid_is_wrong("columns are shifted by one", False)
     assert grid_is_wrong("anything", True)
     assert not grid_is_wrong("the value in row 3 should be 1.2", False)
+
+
+def test_a_rebuilt_grid_is_rolled_back_when_its_extraction_is_not_kept(graph, pdf):
+    from app.ingest.pass2.grid_revision import restore_table, snapshot_table
+    graph.query("MATCH (r:Row {id: 'Table 9-1#r1'}) SET r.values = '[{\"col\": 1, \"value\": \"1.2\"}]'")
+    snap = snapshot_table(graph, "Table 9-1")
+    store_grid(graph, pass1_table(pdf), GridRevision(**GOOD), ["0.8", "1.2", "1.0", "1.5"])
+    restore_table(graph, "Table 9-1", snap)
+    rows = graph.ro_query("MATCH (:Table {id: 'Table 9-1'})-[h:HAS_ROW]->(r) RETURN r.id, r.cells, r.values, "
+                          "r.grid_method ORDER BY h.index").result_set
+    assert [json.loads(c) for _, c, _, _ in rows][1] == ["A 0.8", "1.2"] and rows[1][2] and rows[1][3] == "text_lines"
+    t = graph.ro_query("MATCH (t:Table {id: 'Table 9-1'}) RETURN t.grid_source, t.text_numbers, t.status").result_set[0]
+    assert t == [None, None, "flagged"]

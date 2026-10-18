@@ -436,8 +436,8 @@ async def revise_grid(graph, name: str, nid: str, note: str, paths: Paths, trans
     """Rebuild a table's grid from its image (one MODEL_REVIEW call, checked against the
     text layer, retried once); store it only if it passes."""
     from app.config import get_settings, require_model
-    from app.ingest.pass2.grid_revision import (GRID_SCHEMA_VERSION, check_grid, grid_job, grid_view, store_grid,
-                                                text_layer_numbers)
+    from app.ingest.pass2.grid_revision import (GRID_SCHEMA_VERSION, check_grid, grid_job, grid_view, snapshot_table,
+                                                store_grid, text_layer_numbers)
     from app.ingest.pass2.records import from_graph
     from app.ingest.pass2.runner import content_blocks
     from app.llm import CACHE_DIR, CallSpec, anthropic_async_transport, call_validated
@@ -465,6 +465,7 @@ async def revise_grid(graph, name: str, nid: str, note: str, paths: Paths, trans
               "before": grid_view(table.rows), "after": None, "usages": usage, "attempts": call.attempts,
               "cost_usd": round(sum(cost_of(u) or 0.0 for u in usage), 4)}
     if ok:
+        result["snapshot"] = snapshot_table(graph, nid)  # undone if the re-extraction is not kept
         rows = store_grid(graph, table, call.output, required)
         result["after"] = grid_view(rows)
     return result
@@ -483,6 +484,13 @@ async def reject(graph, name: str, label: str, nid: str, note: str, paths: Paths
                     "results": [], "replaced": False, "after_view": None, "log": ["the rebuilt grid failed its check"]}
     left = review_cap() - (grid["cost_usd"] if grid else 0.0)  # the grid call counts against the reject's cap
     run = await rerun_with_note(graph, name, label, nid, note.strip(), paths, transport, max_cost=max(0.0, left))
+    if grid is not None:
+        snap = grid.pop("snapshot", None)
+        if snap is not None and not run["replaced"]:  # a new grid without a kept answer: put the old table back
+            from app.ingest.pass2.grid_revision import restore_table
+            restore_table(graph, nid, snap)
+            grid["rolled_back"] = True
+            run["log"].append("the answer on the rebuilt grid was not kept, so the old grid and answer were restored")
     rejections = (before.get("rejections") or 0) + 1
     status = "unreviewed" if run["replaced"] else ("needs_manual" if rejections >= MAX_REJECTIONS else "rejected")
     graph.query(f"MATCH (n:{label} {{id: $id}}) SET n.review_status = $s, n.review_rejections = $r, "

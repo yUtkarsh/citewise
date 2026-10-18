@@ -165,6 +165,29 @@ def store_grid(graph, table: TableRec, rev: GridRevision, text_numbers: list[str
     return rows
 
 
+def snapshot_table(graph, table_id: str) -> dict:
+    """The table's properties, rows (with their values) and corrections, so a grid
+    replacement can be undone when the table's re-extraction is not kept."""
+    q = lambda cy: graph.ro_query(cy, {"id": table_id}).result_set  # noqa: E731
+    return {"table": dict(q("MATCH (t:Table {id: $id}) RETURN properties(t)")[0][0]),
+            "rows": [(dict(p), i) for p, i in q("MATCH (:Table {id: $id})-[h:HAS_ROW]->(r:Row) RETURN properties(r), h.index")],
+            "row_footnotes": q("MATCH (:Table {id: $id})-[:HAS_ROW]->(r:Row)-[:FOOTNOTE]->(f) RETURN r.id, f.id"),
+            "corrections": [dict(p) for (p,) in q("MATCH (:Table {id: $id})-[:HAS_CORRECTION]->(c) RETURN properties(c)")]}
+
+
+def restore_table(graph, table_id: str, snap: dict) -> None:
+    """Put back what ``snapshot_table`` saved: rows, values, corrections, table properties."""
+    graph.query("MATCH (:Table {id: $id})-[:HAS_ROW]->(r:Row) DETACH DELETE r", {"id": table_id})
+    graph.query("MATCH (:Table {id: $id})-[:HAS_CORRECTION]->(c) DETACH DELETE c", {"id": table_id})
+    graph.query("MATCH (t:Table {id: $id}) SET t = $props", {"id": table_id, "props": snap["table"]})
+    graph.query("MATCH (t:Table {id: $id}) UNWIND $rows AS r CREATE (t)-[:HAS_ROW {index: r.i}]->(x:Row) SET x = r.p",
+                {"id": table_id, "rows": [{"p": p, "i": i} for p, i in snap["rows"]]})
+    graph.query("UNWIND $pairs AS pr MATCH (r:Row {id: pr[0]}), (f:Footnote {id: pr[1]}) CREATE (r)-[:FOOTNOTE]->(f)",
+                {"pairs": [list(x) for x in snap["row_footnotes"]]})
+    graph.query("MATCH (t:Table {id: $id}) UNWIND $cs AS c CREATE (t)-[:HAS_CORRECTION]->(x:SymbolCorrection) SET x = c",
+                {"id": table_id, "cs": snap["corrections"]})
+
+
 def grid_view(rows: list[dict] | list[RowRec]) -> list[dict]:
     """Rows as {header, cells} for the review page's before-and-after tables."""
     out = []
