@@ -16,10 +16,16 @@ ANSWER_TOOLS = {"compute", "get_clause", "trace", "applicable_clauses", "plan_pr
 ID_LIKE = re.compile(r"\b[A-Z]?\d+(?:[.-]\d+)+\b")  # clause, table and equation numbers
 
 
+PATH_TOOLS = {"trace", "compute", "save_session_facts"}  # once trace names the answer path
+
+
 def answer_labels(calls: list[tuple[str, dict, ToolResult]]) -> list[Label]:
+    """Labels the answer must carry: those of the answer path when trace was called
+    (trace, compute and facts), else those of every tool that reads answer content."""
+    tools = PATH_TOOLS if any(name == "trace" for name, _, _ in calls) else ANSWER_TOOLS
     seen: dict[tuple[str, str], Label] = {}
     for name, _, result in calls:
-        if name in ANSWER_TOOLS:
+        if name in tools:
             for label in result.labels:
                 seen.setdefault((label.target, label.label), label)
     return list(seen.values())

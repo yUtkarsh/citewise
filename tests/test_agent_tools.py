@@ -250,3 +250,26 @@ def test_toolbox_routes_compute_to_tables_rows_and_equations(code_graph):
     saved = box.run("save_session_facts", {"facts": [{"id": "W", "value": 900, "unit": "kips", "source": "user"}]})
     assert saved.data["changed"] == ["W: 800 -> 900"]
     assert box.run("nope", {}).error
+
+
+def test_a_node_waiting_in_the_review_queue_is_unreviewed_until_approved():
+    from app.agent.results import clean, node_label
+    queued = {"id": "Equation 9-9", "status": "extracted", "review_status": "unreviewed", "review_severity": "high",
+              "review_note": "re-extracted after a rejection"}
+    assert node_label(queued, "Equation").label == "unreviewed" and "review queue" in node_label(queued, "Equation").reason
+    assert clean(queued) == {"id": "Equation 9-9", "flagged": True}
+    approved = {**queued, "review_status": "approved"}
+    assert node_label(approved, "Equation") is None and "flagged" not in clean(approved)
+    assert node_label({"id": "x", "status": "extracted", "review_status": "unreviewed"}, "Clause") is None
+
+
+def test_an_equation_shares_the_review_label_of_its_clause_in_trace(code_graph):
+    r = gt.trace(code_graph, [{"id": "Equation 1-2"}])
+    assert any(x.target == "Equation 1-2" and x.label == "unreviewed" for x in r.labels)
+    code_graph.query("MATCH (e:Equation {id: 'Equation 1-2'}) SET e.status = 'extracted'")
+    try:
+        r = gt.trace(code_graph, [{"id": "Equation 1-2"}])  # clause 1.3 is still flagged
+        lab = next(x for x in r.labels if x.target == "Equation 1-2")
+        assert "extracted with clause 1.3" in lab.reason
+    finally:
+        code_graph.query("MATCH (e:Equation {id: 'Equation 1-2'}) SET e.status = 'flagged'")

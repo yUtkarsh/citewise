@@ -2,16 +2,19 @@
 clause) to the ordered steps that lead to it, dependencies first.
 
 What counts as a dependency, by node kind:
-- a parameter depends on the equations that compute it, the tables that give it, and the
-  clauses that define it (up to MAX_DEFINING, nearest the goal's page first; listed as
-  steps, not expanded);
+- a parameter depends on the equations that compute it and the tables that give it (up
+  to MAX_SOURCES, nearest the goal's page first; the full count goes into a 'source'
+  decision), and on the clauses that define it (up to MAX_DEFINING, nearest first;
+  listed as steps, not expanded);
 - an equation depends on its inputs;
 - a table depends on the clause that contains it (it governs how the table is used), or
   without one, on the clauses that require its values;
-- a clause depends on the equations it contains and on what it references as
-  ``requires`` or ``uses_value_from``; a table it contains, and a sub-clause of the goal
-  clause, come after it.
-  A top-level clause (a chapter) is listed as a step but not expanded.
+- a clause depends on the equations it contains, on every equation it references
+  (referring to an equation is using it, typed or not), and on the clauses and tables it
+  references as ``requires`` or ``uses_value_from``; a table it contains, and a
+  sub-clause of the goal clause, come after it.
+  A top-level clause (a chapter) is listed as a step but not expanded. Moving into a
+  sub-clause of the goal does not count toward MAX_DEPTH.
 
 Steps are clauses, tables and equations; parameters become each step's inputs, marked
 known when a session fact gives them. Ties are ordered by page. Decision points are
@@ -30,8 +33,9 @@ from app.agent.results import ToolResult, Touched, edge_label, node_label
 from app.agent.search import find_entry
 
 MAX_DEPTH = 4
-MAX_NODES = 60
+MAX_NODES = 90
 MAX_DEFINING = 3  # defining clauses per parameter
+MAX_SOURCES = 3  # computing equations and giving tables per parameter
 STEP_LABELS = ("Clause", "Table", "Equation")
 DEP_TYPES = ["requires", "uses_value_from"]
 DECISION_TYPES = ["alternative_to", "exception_to"]
@@ -50,8 +54,11 @@ DEPENDS_ON = {
     ],
     "Clause": [
         "MATCH (n:Clause {id: $id})-[e:CONTAINS]->(x:Equation) RETURN 'Equation', x, n.id, 'CONTAINS', x.id, e",
-        "MATCH (n:Clause {id: $id})-[e:REFERENCES]->(x) WHERE e.type IN $types AND (x:Clause OR x:Table OR x:Equation) "
+        "MATCH (n:Clause {id: $id})-[e:REFERENCES]->(x) WHERE e.type IN $types AND (x:Clause OR x:Table) "
         "RETURN labels(x)[0], x, n.id, 'REFERENCES', x.id, e",
+        "MATCH (n:Clause {id: $id})-[e:REFERENCES]->(x:Equation) WHERE NOT coalesce(e.text, '') STARTS WITH 'link to p' "
+        "AND (e.type IS NULL OR NOT e.type IN ['see_also', 'alternative_to', 'exception_to']) "
+        "RETURN 'Equation', x, n.id, 'REFERENCES', x.id, e",
     ],
 }
 _COLS = "AS label, x AS node, {src} AS src, '{kind}' AS kind, {dst} AS dst, e AS edge"
@@ -85,9 +92,10 @@ def resolve_goal(graph, goal: str, encode) -> tuple[tuple[str, dict] | None, lis
     return top, hits[1:6]
 
 
-def walk(graph, start: tuple[str, str], t: Touched, labels: list):
+def walk(graph, start: tuple[str, str], t: Touched, labels: list, source_counts: dict | None = None):
     """Breadth-first walk of DEPENDS_ON from start. Returns (nodes, deps): nodes maps
-    (label, id) -> props; deps maps a node to the nodes it depends on."""
+    (label, id) -> props; deps maps a node to the nodes it depends on. ``source_counts``
+    collects, per parameter, how many sources the code has when more than MAX_SOURCES."""
     nodes: dict[tuple[str, str], dict] = {}
     deps: dict[tuple[str, str], set] = defaultdict(set)
     frontier = [(start, 0)]
@@ -118,24 +126,31 @@ def walk(graph, start: tuple[str, str], t: Touched, labels: list):
                 queries.append((SUBCLAUSES, True))
         if label == "Table" and not graph.ro_query(queries[0][0], {"id": nid}).result_set:
             queries = [(TABLE_FALLBACK, False)]
+        results = []
         for query, reverse in queries:
-            for x_label, x, src, kind, dst, e in graph.ro_query(query, {"id": nid, "types": DEP_TYPES}).result_set:
-                if kind == "PART_OF":
-                    subtree.add(x.properties.get("id"))
-                key = (x_label, x.properties.get("id"))
-                if key == (label, nid):
-                    continue
-                t.edge(src, kind, dst)
-                if (lab := edge_label(src, kind, dst, e.properties)) is not None:
-                    labels.append(lab)
-                if reverse:
-                    deps[key].add((label, nid))
-                else:
-                    deps[(label, nid)].add(key)
-                if key not in nodes and len(nodes) < MAX_NODES:
-                    nodes[key] = x.properties
-                    t.node(*key)
-                    frontier.append((key, level + 1))
+            results += [(row, reverse) for row in graph.ro_query(query, {"id": nid, "types": DEP_TYPES}).result_set]
+        if label == "Parameter" and len(results) > MAX_SOURCES:
+            if source_counts is not None:
+                source_counts[nid] = len(results)
+            results.sort(key=lambda rr: abs((rr[0][1].properties.get("page") or 0) - root_page))
+            results = results[:MAX_SOURCES]
+        for (x_label, x, src, kind, dst, e), reverse in results:
+            if kind == "PART_OF":
+                subtree.add(x.properties.get("id"))
+            key = (x_label, x.properties.get("id"))
+            if key == (label, nid):
+                continue
+            t.edge(src, kind, dst)
+            if (lab := edge_label(src, kind, dst, e.properties)) is not None:
+                labels.append(lab)
+            if reverse:
+                deps[key].add((label, nid))
+            else:
+                deps[(label, nid)].add(key)
+            if key not in nodes and len(nodes) < MAX_NODES:
+                nodes[key] = x.properties
+                t.node(*key)
+                frontier.append((key, level + (0 if kind == "PART_OF" else 1)))  # the goal's own parts: no hop
     return nodes, deps
 
 
@@ -193,7 +208,8 @@ def plan_procedure(graph, goal: str, facts: dict[str, Fact], encode=None) -> Too
     root_key = (root[0], root[1]["id"])
     t, labels = Touched(), []
     t.node(*root_key)
-    nodes, deps = walk(graph, root_key, t, labels)
+    source_counts: dict[str, int] = {}
+    nodes, deps = walk(graph, root_key, t, labels, source_counts)
     step_deps = step_dependencies(nodes, deps)
     ordered = order(nodes, step_deps)
     number = {k: i + 1 for i, k in enumerate(ordered)}
@@ -248,9 +264,11 @@ def plan_procedure(graph, goal: str, facts: dict[str, Fact], encode=None) -> Too
                                   "why": f"{nid} is an {kind.replace('_', ' ')} {xid}: which one applies is a choice"})
         steps.append(step)
     for pid, srcs in sources.items():
-        if len({s for s in srcs}) > 1:
+        if len({s for s in srcs}) > 1 or pid in source_counts:
+            total = source_counts.get(pid, len(set(srcs)))
             decisions.append({"kind": "source", "at": pid, "options": sorted(s[1] for s in srcs),
-                              "why": f"{pid} has more than one source in the code"})
+                              "why": f"{pid} has {total} sources in the code" +
+                                     (f"; the {len(set(srcs))} nearest are listed" if pid in source_counts else "")})
     missing = sorted({i["id"] for s in steps for i in s.get("inputs", []) if not i["known"] and not i["from_steps"]})
     data = {"goal": {"label": root_key[0], "id": root_key[1], "title": _title(root[0], root[1])},
             "steps": steps, "decisions": decisions, "inputs_needed": missing,

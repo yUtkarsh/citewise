@@ -107,3 +107,10 @@ def test_the_cost_cap_stops_before_the_next_call(code_graph):
     turn = a.ask("anything")
     assert turn.stopped and "cost cap" in turn.stopped and len(script.requests) == 1
     assert a.spent == pytest.approx(0.003)
+
+
+def test_with_trace_only_the_answer_paths_labels_are_required(code_graph):
+    script = Script([tool("get_clause", 1, id="1.3")], [tool("trace", 2, items=[{"id": "1.2"}])],
+                    [text("1.2 Base Shear, p. 10.")])
+    turn = agent(code_graph, script).ask("What is 1.2?")
+    assert "Labels (added by the checker)" not in turn.answer  # 1.3 is flagged but not on the path

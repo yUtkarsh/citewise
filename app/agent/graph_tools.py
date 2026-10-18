@@ -270,9 +270,12 @@ def trace(graph, items: list[dict]) -> ToolResult:
             if table and (lab := node_label(table[1], "Table")) is not None:
                 labels.append(lab)
         elif label == "Equation":
-            clause = graph.ro_query("MATCH (c:Clause)-[:CONTAINS]->(:Equation {id: $id}) RETURN c.id, c.title",
+            clause = graph.ro_query("MATCH (c:Clause)-[:CONTAINS]->(:Equation {id: $id}) RETURN c.id, c.title, c",
                                     {"id": nid}).result_set
             text = nid + (f" (in {clause[0][0]} {clause[0][1] or ''}".rstrip() + ")" if clause else "")
+            if clause and not any(x.target == nid for x in labels) and \
+                    (lab := node_label(clause[0][2].properties, "Clause")) is not None:
+                labels.append(Label(nid, lab.label, f"extracted with clause {clause[0][0]}: {lab.reason}"))
         elif label == "Parameter":
             text = f"{p.get('symbol') or nid}: {p.get('description') or ''}"[:160]
         else:

@@ -11,7 +11,8 @@ import json
 
 UNREVIEWED, INFERRED, ASSUMED = "unreviewed", "inferred", "assumed"
 DROP_KEYS = {"embedding", "embed_hash", "embed_model", "raw_spans", "regions", "suspect_spans", "alias_text",
-             "review_status", "schema_version", "extraction_schema"}
+             "review_status", "schema_version", "extraction_schema", "review_severity", "review_note",
+             "review_rejections", "review_time", "reviewed_at"}
 TEXT_CHARS = 1500  # long text properties are cut in tool results
 
 
@@ -60,9 +61,16 @@ class ToolResult:
 
 
 def node_label(props: dict, label: str) -> Label | None:
-    """'unreviewed' for a flagged node that no reviewer approved (SPEC Step 4)."""
-    if props.get("status") == "flagged" and props.get("review_status") != "approved":
+    """'unreviewed' for a node no reviewer approved that is flagged, or that waits in the
+    review queue (``review_severity`` set: for example re-extracted after a rejection and
+    not yet approved) (SPEC Step 4)."""
+    if props.get("review_status") == "approved":
+        return None
+    if props.get("status") == "flagged":
         return Label(f"{props.get('id')}", UNREVIEWED, f"{label} flagged: " + flag_reasons(props.get("flags")))
+    if props.get("review_severity"):
+        return Label(f"{props.get('id')}", UNREVIEWED,
+                     f"{label} is in the review queue ({props['review_severity']}), not yet approved")
     return None
 
 
@@ -91,8 +99,8 @@ def clean(props: dict) -> dict:
     out = {}
     for key, value in props.items():
         if key == "status":
-            if value == "flagged":
-                out["flagged"] = True
+            if value == "flagged" or (props.get("review_severity") and props.get("review_status") != "approved"):
+                out["flagged"] = True  # flagged, or waiting in the review queue
             continue
         if key in DROP_KEYS or value is None:
             continue
