@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import json
+import re
 from typing import Callable
 
 from app.agent import graph_tools as gt
@@ -11,6 +12,7 @@ from app.agent.compute import compute_equation, compute_table
 from app.agent.facts import SOURCES, Fact, FactStore
 from app.agent.results import Label, ToolResult
 from app.agent.search import find_entry
+from app.ingest.pass2.validate import numbers
 
 SUBSCRIPTS = str.maketrans("₀₁₂₃₄₅₆₇₈₉ₐₑₒₓₕₖₗₘₙₚₛₜ", "0123456789aeoxhklmnpst")
 
@@ -21,6 +23,9 @@ def symbol_key(name: str, case: bool = False) -> str:
     return "".join(ch for ch in (text if case else text.lower()) if ch.isalnum())
 
 PROCEDURE_TOOL = "plan_procedure"
+# The user's message accepts typical values the previous answer offered ("yes", "use them", "I accept")
+ACCEPTS = re.compile(r"\b(yes|yeah|yep|ok|okay|accept(?:ed)?|agree[ds]?|go ahead|confirm(?:ed)?|fine|sounds good|"
+                     r"use (?:them|those|these|the typical|typical))\b", re.I)
 
 
 def _obj(properties: dict, required: list[str]) -> dict:
@@ -146,6 +151,26 @@ class Toolbox:
     procedure: Callable[..., ToolResult] | None = None
     calls: list[tuple[str, dict, ToolResult]] = field(default_factory=list)
     mapped: set[tuple[str, float]] = field(default_factory=set)  # (parameter, value) compute mapped from a row
+    # Set by the agent loop for each question; None (a toolbox used on its own) checks nothing.
+    user_texts: list[str] | None = None  # the user's messages in this session, latest last
+    accepts_assumed: bool = False  # the latest message accepts typical values the last answer offered
+
+    def check_source(self, fid: str, value, source: str) -> str | None:
+        """Why ``source`` cannot stand for this value, or None. 'user': a number the user
+        never wrote in this session; 'assumed': the user has not accepted typical values."""
+        if self.user_texts is None:
+            return None
+        if source == "user":
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                return None  # a choice in words (a site class, a procedure): not checked
+            given = [n for text in self.user_texts for n in numbers(text)]
+            if not any(abs(n - number) <= 1e-9 * max(1.0, abs(number)) for n in given):
+                return f"the user did not give {fid} = {value}"
+        if source == "assumed" and not self.accepts_assumed:
+            return "the user has not accepted typical values"
+        return None
 
     def run(self, name: str, args: dict) -> ToolResult:
         try:
@@ -227,11 +252,16 @@ class Toolbox:
                 return (found.pop(), True) if len(found) == 1 else (given, False)
         return given, False
 
-    def save_facts(self, items: list[dict]) -> ToolResult:
+    def save_facts(self, items: list[dict], trusted: bool = False) -> ToolResult:
+        """``trusted``: saves the user made directly (the facts panel, the CLI's /set) keep
+        their source; the agent's saves are checked (``check_source``)."""
         changes, saved, labels = [], [], []
-        downgraded = []
+        downgraded, refused = [], []
         for item in items:
             fid, is_param = self.parameter_id(str(item["id"]))
+            if not trusted and (why := self.check_source(fid, item["value"], item.get("source", "user"))):
+                item = {**item, "source": "agent_selected"}
+                refused.append(f"{fid} saved as agent_selected ({why})")
             if item.get("source") == "matched_row":  # only a value compute mapped from a matched row
                 try:
                     number = float(item["value"])
@@ -254,7 +284,8 @@ class Toolbox:
                 changes.append((previous, fact))
         result = ToolResult(f"saved {len(saved)} facts" + (f", {len(changes)} changed" if changes else "")
                             + (f"; {', '.join(downgraded)} saved as agent_selected (compute did not map "
-                               f"{'it' if len(downgraded) == 1 else 'them'})" if downgraded else ""),
+                               f"{'it' if len(downgraded) == 1 else 'them'})" if downgraded else "")
+                            + ("; " + "; ".join(refused) if refused else ""),
                             {"saved": saved, "changed": [f"{p.id}: {p.value} -> {f.value}" for p, f in changes],
                              "facts": [f.display() for f in self.store.all().values()]}, labels=labels)
         if changes and self.on_facts_changed is not None:

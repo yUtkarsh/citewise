@@ -122,7 +122,7 @@ def handle(agent: Agent, line: str) -> bool:
         agent.new_session(store=memory, memory=memory)
         print(f"new session{' ' + memory.session if memory else ''}: no history, no facts")
     elif line.startswith("/set "):
-        result = agent.toolbox.save_facts([parse_set(line[5:]).__dict__ | {"source": "user"}])
+        result = agent.toolbox.save_facts([parse_set(line[5:]).__dict__ | {"source": "user"}], trusted=True)
         print(result.summary)
         if "replay" in result.data and agent.last_replay is not None:
             print(">>> (fact edited) re-answering the last question it affects")

@@ -212,7 +212,7 @@ def _panel_facts(agent: Agent, facts: list[dict]) -> ToolResult:
         old = current.get(f["param_id"])
         items.append({"id": f["param_id"], "value": f.get("value"), "unit": f.get("unit"),
                       "source": f.get("source") or "user", "label": old.label if old else None})
-    return agent.toolbox.save_facts(items)
+    return agent.toolbox.save_facts(items, trusted=True)
 
 
 def _run(chat: Chat, question: str, facts: list[dict] | None, rerun: bool, emit) -> None:

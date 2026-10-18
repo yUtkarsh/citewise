@@ -205,6 +205,7 @@ class Agent:
         self._replayed = replayed  # set again by replay_last when a fact changes during the turn
         self._facts_at_start = self.toolbox.store.all()
         facts_text = facts_block(self.toolbox.store)
+        self.tell_toolbox(user_text or question)
         messages = list(self.history)
         messages.append({"role": "user", "content": question})
         settings = get_settings()
@@ -283,6 +284,15 @@ class Agent:
         self._facts_at_start = None
         self.remember(turn)
         return turn
+
+    def tell_toolbox(self, question: str) -> None:
+        """What the fact-source checks need: the user's messages in this session, and
+        whether this one accepts typical values that the last answer offered."""
+        from app.agent.tools import ACCEPTS
+        users = [m["content"] for m in self.history if m["role"] == "user" and isinstance(m["content"], str)]
+        last = self.turns[-1].answer if self.turns else ""
+        self.toolbox.user_texts = users + [question]
+        self.toolbox.accepts_assumed = "assumed" in last.lower() and bool(ACCEPTS.search(question))
 
     def final_answer(self, messages: list[dict], facts_text: str, turn: Turn) -> str:
         """One more call without tools when a turn ended with no answer text (a reply of
