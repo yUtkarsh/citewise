@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Code Ingestion</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+  <script src="https://cdn.jsdelivr.net/npm/cytoscape@3.30.2/dist/cytoscape.min.js" defer></script>
+  <script src="shell.js" defer></script>
+  <script src="ingest.js" defer></script>
+</head>
+<body class="page">
+  <header class="topbar">
+    <a class="brand brand-link" href="/"><span class="brand-mark" aria-hidden="true"></span><span class="brand-name">Code Graph Agent</span></a>
+    <div class="topbar-right">
+      <button class="icon-btn" id="theme-toggle" type="button" aria-label="Switch theme" title="Switch theme">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M12 3a9 9 0 1 0 9 9 7 7 0 0 1-9-9z" fill="currentColor"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <main class="page-main">
+    <a class="back" href="/">← Library</a>
+    <div class="page-head">
+      <div>
+        <h1 id="heading">Adding a code</h1>
+        <p class="lede" id="file-line"></p>
+      </div>
+      <span class="status" id="stage-badge"></span>
+    </div>
+
+    <!-- waiting for the profile -->
+    <section id="profiling" class="panel" hidden>
+      <div class="spinner-line"><span class="spinner" aria-hidden="true"></span><span id="profiling-msg">Building the document profile…</span></div>
+      <pre class="log" id="profiling-log"></pre>
+    </section>
+
+    <!-- profile screen -->
+    <section id="profile" hidden>
+      <form id="confirm-form" class="panel">
+        <h2 class="panel-h">Detected document</h2>
+        <div class="fields">
+          <label>Title<input name="title" required></label>
+          <label>Edition<input name="edition"></label>
+          <label>Jurisdiction<input name="jurisdiction"></label>
+        </div>
+        <p class="hint" id="reingest-note" hidden>This code is already in the library. Confirming deletes its graph and builds it again from this PDF (cached Claude answers are reused).</p>
+        <div class="confirm-row">
+          <button class="btn primary" type="submit" id="confirm-btn">Confirm and start Pass 1 and Pass 2</button>
+          <span class="hint">Pass 1 makes no API calls. Pass 2 calls Claude and stops at the cost cap of <strong id="cap"></strong>.</span>
+        </div>
+      </form>
+
+      <div class="grid-2">
+        <div class="panel">
+          <h2 class="panel-h">Validation</h2>
+          <div id="validation"></div>
+        </div>
+        <div class="panel">
+          <h2 class="panel-h">Heading streams</h2>
+          <div id="streams"></div>
+        </div>
+      </div>
+      <div class="panel">
+        <h2 class="panel-h">Sample headings, spread across the document</h2>
+        <table class="data" id="samples"></table>
+      </div>
+      <div class="panel">
+        <h2 class="panel-h">Page ranges</h2>
+        <div class="ranges" id="ranges"></div>
+      </div>
+    </section>
+
+    <!-- progress screen -->
+    <section id="progress" hidden>
+      <ol class="stages" id="stages">
+        <li data-stage="profiling">Profile</li>
+        <li data-stage="pass1">Pass 1 · skeleton</li>
+        <li data-stage="pass2">Pass 2 · Claude</li>
+        <li data-stage="done">Report</li>
+      </ol>
+      <div class="grid-progress">
+        <div class="panel">
+          <div class="counters" id="counters"></div>
+          <div class="cost">
+            <div class="cost-line"><span>Pass 2 cost</span><strong id="cost">$0.00</strong><span class="hint" id="cost-cap"></span></div>
+            <div class="bar"><i id="cost-bar" style="width:0"></i></div>
+            <div class="cost-line"><span>Pass 2 jobs</span><strong id="jobs-done">–</strong></div>
+            <div class="bar"><i id="jobs-bar" style="width:0"></i></div>
+          </div>
+          <div id="done-box" hidden></div>
+          <pre class="log" id="log"></pre>
+        </div>
+        <div class="panel live-graph">
+          <div class="live-head"><span class="panel-h">Skeleton graph</span><span class="hint" id="graph-count">chapters and sections appear as they are written</span></div>
+          <div id="cy" class="cy-box"></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="failed" class="panel notice bad" hidden></section>
+  </main>
+</body>
+</html>

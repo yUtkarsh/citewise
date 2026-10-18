@@ -1,0 +1,17 @@
+# Phase 4 checkpoint questions (real API calls):
+#   python -m app.agent.chat --code fema356 --max-cost 3 --script scripts/phase4_questions.txt
+# Calculation, table lookup and what-if share one session.
+Pseudo lateral load for a building with C1=1.2, C2=1.1, C3=1.0, Cm=0.9, Sa=0.6, W=1500 kips?
+Acceptance criteria for a reinforced concrete beam controlled by shear with stirrups at ≤ d/2?
+What if W is 2000 kips?
+# Missing input: a new session, so no facts are known.
+/new
+What's the pseudo lateral load for my building?
+What does Section 3.3.1.3 reference?
+How is the pseudo lateral load distributed to the diaphragm at each floor level (Equation 3-13)?
+# Procedure, follow-up and impact: a new session.
+/new
+What is the step-wise procedure for calculating the acceptance criteria for a concrete shear wall built in 1980?
+The wall is shear-controlled and I'm using the nonlinear static procedure for Life Safety. What's the acceptance limit?
+Which clauses are affected if the knowledge factor drops to 0.75?
+/cost

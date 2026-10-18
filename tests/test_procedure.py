@@ -1,0 +1,44 @@
+"""plan_procedure on the invented code graph: order, inputs, decisions, labels."""
+from __future__ import annotations
+
+from app.agent.facts import Fact
+from app.agent.procedure import plan_procedure
+from tests.agent_graph import code_graph  # noqa: F401  (fixture)
+
+
+def steps(result) -> list[str]:
+    return [s["id"] for s in result.data["steps"]]
+
+
+def test_dependencies_come_first_and_inputs_show_what_the_facts_give(code_graph):
+    r = plan_procedure(code_graph, "F", {"W": Fact("W", 800.0, "kips")})
+    order = steps(r)
+    assert order.index("Equation 1-1") < order.index("Equation 1-2")  # V is computed before it is used
+    eq2 = next(s for s in r.data["steps"] if s["id"] == "Equation 1-2")
+    v = next(i for i in eq2["inputs"] if i["id"] == "V")
+    assert v["from_steps"] == [order.index("Equation 1-1") + 1] and not v["known"]
+    eq1 = next(s for s in r.data["steps"] if s["id"] == "Equation 1-1")
+    assert next(i for i in eq1["inputs"] if i["id"] == "W")["known"]
+    assert set(r.data["inputs_needed"]) == {"C", "k"}
+    assert any(x.label == "unreviewed" and x.target == "Equation 1-2" for x in r.labels)
+
+
+def test_a_goal_clause_lists_its_sub_clauses_after_it_and_tables_after_their_clause(code_graph):
+    r = plan_procedure(code_graph, "1", {})
+    order = steps(r)
+    assert order.index("1") < order.index("1.2") and order.index("1") < order.index("1.3")
+    r = plan_procedure(code_graph, "1.3", {})
+    assert "Table 1-1" in steps(r)  # through the inferred reference
+    assert any(x.label == "inferred" for x in r.labels)
+
+
+def test_decisions_are_found_in_the_graph(code_graph):
+    r = plan_procedure(code_graph, "1.2", {})
+    kinds = {(d["kind"], d["at"]) for d in r.data["decisions"]}
+    assert ("alternative_to", "1.2") in kinds  # 1.2 is an alternative to 1.3
+    assert ("row", "Table 1-1") in kinds and ("column", "Table 1-1") in kinds
+
+
+def test_a_phrase_goal_is_resolved_with_find_entry(code_graph):
+    r = plan_procedure(code_graph, "story force", {})
+    assert r.data["goal"]["id"] in {"1.3", "F", "Equation 1-2"}

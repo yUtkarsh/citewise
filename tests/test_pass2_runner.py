@@ -328,3 +328,11 @@ def test_a_hinted_answer_must_verify_every_equation():
     assert not rn.passes(j, note)
     j.strict = False
     assert rn.passes(j, note)
+
+
+def test_a_table_answer_replaces_a_stored_one_when_no_retry_check_fails():
+    j = job(kind="table")
+    blank = rn.Outcome(j, "flagged", Answer(value=1), [Issue("blank_cell", "(2, 3): not permitted", retry=False)], None)
+    assert rn.passes(j, blank)  # blank cells always go to review; they do not block a replacement
+    columns = rn.Outcome(j, "flagged", Answer(value=1), [Issue("value_column", "row 2: columns [9]")], None)
+    assert not rn.passes(j, columns)

@@ -185,9 +185,13 @@ def write_table(graph, outcome: Outcome) -> None:
     _merge_parameters(graph, [{"id": h.parameter_id, "symbol": h.header_text, "units": h.units, "source": "table",
                                **prov(h.header_text)} for h in result.header_parameters], overwrite=False)
     g = GraphRows()
-    for h in result.header_parameters:
-        g.edge(("Table", table.id), "GIVES", ("Parameter", h.parameter_id),
-               {"col": h.col, "units": h.units, "header_text": h.header_text})
+    by_param: dict[str, list] = {}
+    for h in result.header_parameters:  # a parameter may sit in several columns (merged-cell grids)
+        by_param.setdefault(h.parameter_id, []).append(h)
+    for pid, hs in by_param.items():
+        g.edge(("Table", table.id), "GIVES", ("Parameter", pid),
+               {"col": hs[0].col, "cols": sorted({h.col for h in hs}), "units": hs[0].units,
+                "header_text": hs[0].header_text})
     blanks: dict[int, list[dict]] = {}
     for b in result.blank_cells:
         blanks.setdefault(b.row, []).append(b.model_dump())
@@ -202,6 +206,12 @@ def write_table(graph, outcome: Outcome) -> None:
         g.node("Row", {"id": f"{table.id}#r{index}", "blank_cells": json.dumps(items, ensure_ascii=False),
                        "status": "flagged"})
     write(graph, g, indexes=False)
+    answered = {f"{table.id}#r{r.row}" for r in result.rows} | {f"{table.id}#r{i}" for i in blanks}
+    left_out = [f"{table.id}#r{r.index}" for r in (job.rows or []) if not r.is_header
+                and f"{table.id}#r{r.index}" not in answered]
+    if left_out:  # rows this answer leaves out keep no values from an earlier answer
+        graph.query("UNWIND $ids AS id MATCH (r:Row {id: id}) SET r.values = null, r.conditions = null",
+                    {"ids": left_out})
     for rule in result.footnote_rules:
         graph.query("MATCH (:Table {id: $tid})-[:HAS_FOOTNOTE]->(f:Footnote {marker: $marker}) "
                     "SET f.rule_kind = $kind, f.rule = $rule, f.applies_to_rows = $rows, f.applies_to_cols = $cols",

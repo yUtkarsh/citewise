@@ -63,7 +63,9 @@ def fake_claude(seen: list):
                            "formula": None} for c in g["cells"] if v.numbers(c["text"])]
                 rows.append({"row": g["row"], "conditions": [g["cells"][0]["text"][:30] if g["cells"] else ""],
                              "values": values})
-            out = {"header_parameters": [], "rows": rows, "footnote_rules": [], "blank_cells": []}
+            cols = sorted({x["col"] for r in rows for x in r["values"]})
+            headers = [{"col": c, "parameter_id": f"p{c}", "header_text": f"p{c}", "units": None} for c in cols]
+            out = {"header_parameters": headers, "rows": rows, "footnote_rules": [], "blank_cells": []}
         return Reply(text=json.dumps(out), model="claude-haiku-5-5", stop_reason="end_turn",
                      usage={"input_tokens": 500, "output_tokens": 100})
 

@@ -45,6 +45,7 @@ class Pass2Options:
     crop_mode: str = "always"
     max_cost: float | None = None  # USD
     clause_ids: set[str] | None = None  # only these clauses
+    table_ids: set[str] | None = None  # only these tables
     use_cache: bool = True  # False: ask Claude again for the selected jobs and replace their cached answers
     save_images_dir: Path | None = None  # write the images each call sends (with dry_run: render only)
     hint: str | None = None  # reviewer note added to the selected clause jobs (strict replacement)
@@ -103,6 +104,8 @@ def select_tables(skel: Skeleton2, opts: Pass2Options):
         if opts.pages is not None and not set(t.pages) & opts.pages:
             continue
         if opts.chapters is not None and not (owner and skel.chapter(owner) in opts.chapters):
+            continue
+        if opts.table_ids is not None and t.id not in opts.table_ids:
             continue
         out.append(t)
     return out[:opts.limit] if opts.limit else out

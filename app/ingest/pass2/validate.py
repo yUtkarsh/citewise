@@ -26,6 +26,7 @@ SEVERITY = {
     "source_quote": "low", "unmapped": "low", "reference_unknown": "low", "footnote_unknown": "low",
     "bad_id": "low", "refused": "high", "equation_mismatch": "high", "equation_latex": "low",  # equation_latex: the checker could not verify
     "image_read": "low", "image_read_disagrees": "high", "equation_missing": "medium",
+    "value_column": "high", "row_missing": "high",
 }
 GRID_METHODS = {"docling", "find_tables"}  # grids whose cells are trusted for exact matching
 SHORT_EDIT_RAW, SHORT_EDIT_NEW = 2, 3  # character-level edit outside suspect text
@@ -703,6 +704,30 @@ def check_second_read(reads, wanted: list[tuple[int, int, float, str]]) -> list[
     return issues
 
 
+def is_body_row(row: RowRec, caption: str, headers: list[str]) -> bool:
+    """A non-header row that holds values. Header rows, the caption repeated in the grid
+    and heading rows (labels only, folded into the next rows' conditions) are not."""
+    if row.is_header or not has_values(row, headers):
+        return False
+    text, cap = norm_text(" ".join(row.cells)), norm_text(caption)
+    return not (cap and (text in cap or cap in text))
+
+
+def value_columns(result: TableExtraction) -> list[Issue]:
+    """Every value must sit in a column that a header parameter names, or nothing says
+    what the number is. One issue per row, listing its stray columns."""
+    header_cols = sorted({h.col for h in result.header_parameters})
+    issues = []
+    for out in result.rows:
+        stray = sorted({v.col for v in out.values} - set(header_cols))
+        if stray:
+            issues.append(Issue("value_column", f"row {out.row}: values in columns {stray} have no header parameter "
+                                                f"(header parameter columns: {header_cols}); add a header parameter for each "
+                                                f"such column (when merged cells shift a quantity to another column in "
+                                                f"some rows, list its parameter once per column)"))
+    return issues
+
+
 def check_table(result: TableExtraction, table: TableRec, rows: list[RowRec]) -> list[Issue]:
     issues: list[Issue] = []
     by_index = {r.index: r for r in rows}
@@ -727,10 +752,12 @@ def check_table(result: TableExtraction, table: TableRec, rows: list[RowRec]) ->
                 except Exception as exc:
                     issues.append(Issue("sympy_parse", f"row {out.row}, col {value.col}: formula "
                                                        f"{value.formula[:80]!r}: {exc}"))
+    issues += value_columns(result)
     headers = column_headers(rows)
-    missing = [r.index for r in rows if not r.is_header and r.index not in seen and has_values(r, headers)]
+    missing = [r.index for r in rows if r.index not in seen and is_body_row(r, table.caption, headers)]
     if missing:
-        issues.append(Issue("grid_dimension", f"rows with numbers are missing from the answer: {missing[:20]}"))
+        issues.append(Issue("row_missing", f"body rows of the grid are missing from the answer: {missing[:20]}; "
+                                           f"report every row that holds values"))
     for hp in result.header_parameters:
         if not 0 <= hp.col < width:
             issues.append(Issue("grid_dimension", f"header parameter {hp.parameter_id}: no column {hp.col}"))

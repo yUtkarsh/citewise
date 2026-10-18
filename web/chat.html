@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Code Graph Agent</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+  <link rel="stylesheet" href="styles.css">
+  <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/cytoscape@3.30.2/dist/cytoscape.min.js" defer></script>
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <a class="brand-link" href="/" title="Back to the library"><span class="brand-mark" aria-hidden="true"></span>
+      <span class="brand-name">Code Graph Agent</span></a>
+      <span class="graph-name" id="graph-name"></span>
+    </div>
+    <div class="topbar-right">
+      <span class="mode" id="mode" hidden></span>
+      <button class="icon-btn" id="theme-toggle" type="button" aria-label="Switch theme" title="Switch theme">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M12 3a9 9 0 1 0 9 9 7 7 0 0 1-9-9z" fill="currentColor"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="chat" aria-label="Chat">
+      <div class="messages" id="messages">
+        <div class="empty" id="empty">
+          <h1>Ask a design question</h1>
+          <p>Every number comes from the code graph, and every step shows up on the right as it is walked.</p>
+          <button class="example" id="example" type="button"></button>
+        </div>
+      </div>
+      <form class="composer" id="composer">
+        <textarea id="question" rows="2" placeholder="Ask about a clause, equation or table…" aria-label="Question"></textarea>
+        <button class="send" id="send" type="submit">Ask</button>
+      </form>
+    </section>
+
+    <section class="work" aria-label="Working set">
+      <div class="facts" id="facts">
+        <div class="facts-head">
+          <span class="panel-title">Project facts</span>
+          <span class="facts-hint" id="facts-hint">Facts from your question appear here. Edit a value to re-run.</span>
+        </div>
+        <div class="facts-list" id="facts-list"></div>
+      </div>
+
+      <div class="graph-wrap">
+        <div id="cy" class="cy" aria-label="Graph of the nodes the agent touched"></div>
+        <div class="graph-empty" id="graph-empty">The graph fills in as the agent's tools touch nodes.</div>
+        <div class="graph-status" id="graph-status"></div>
+        <div class="legend" id="legend"></div>
+
+        <aside class="source" id="source" hidden aria-label="Source">
+          <div class="source-head">
+            <span class="kind" id="src-kind"></span>
+            <button class="icon-btn" id="src-close" type="button" aria-label="Close source">
+              <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+            </button>
+          </div>
+          <div class="source-body" id="src-body"></div>
+        </aside>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

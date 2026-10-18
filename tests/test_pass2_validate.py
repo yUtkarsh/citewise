@@ -231,7 +231,11 @@ def table(method, rows):
 GRID = [["Type", "m-factor", "Limit"], ["Flexible", "1.5", "2,000"], ["Stiff", "", "-0.25"]]
 
 
-def result(rows, blanks=(), rules=(), headers=()):
+def result(rows, blanks=(), rules=(), headers=None):
+    """headers=None: one header parameter for each column that holds a value."""
+    if headers is None:
+        cols = sorted({x.col for r in rows for x in r.values})
+        headers = [HeaderParameter(col=c, parameter_id=f"p{c}", header_text=f"p{c}", units=None) for c in cols]
     return TableExtraction(header_parameters=list(headers), rows=rows, footnote_rules=list(rules),
                            blank_cells=list(blanks))
 
@@ -266,7 +270,8 @@ def test_header_cells_are_exempt_and_header_rows_are_not_body_rows():
     t = table("docling", GRID)
     r = result([RowOut(row=1, conditions=[], values=[value(1, 1.5), value(2, 2000)]),
                 RowOut(row=2, conditions=[], values=[value(2, -0.25)])],
-               headers=[HeaderParameter(col=1, parameter_id="m_factor", header_text="m-factor 99", units=None)])
+               headers=[HeaderParameter(col=1, parameter_id="m_factor", header_text="m-factor 99", units=None),
+                        HeaderParameter(col=2, parameter_id="limit", header_text="Limit", units=None)])
     assert not v.check_table(r, t, t.rows)
     as_body = result([RowOut(row=0, conditions=[], values=[]), *r.rows])
     assert codes(v.check_table(as_body, t, t.rows)) == ["grid_dimension"]
@@ -278,22 +283,22 @@ def test_heading_rows_with_footnote_digits_need_no_values():
     r = result([RowOut(row=3, conditions=[], values=[value(1, 1.5), value(2, 2000)])])
     assert not v.check_table(r, t, t.rows)  # rows 1 and 2 are labels with marker digits, not values
     missing = result([RowOut(row=1, conditions=[], values=[])])
-    assert "grid_dimension" in codes(v.check_table(missing, t, t.rows))  # row 3 has values
+    assert "row_missing" in codes(v.check_table(missing, t, t.rows))  # row 3 has values
 
 
 def test_wordy_cell_under_a_numeric_header_is_a_value():
     t = table("docling", [["Ratio", "0.2", "0.5"], ["Flexible", "1.5 typ", "about 2 kips"]])
     assert v.has_values(t.rows[1], v.column_headers(t.rows))
     r = result([])
-    assert "grid_dimension" in codes(v.check_table(r, t, t.rows))
+    assert "row_missing" in codes(v.check_table(r, t, t.rows))
     assert v.is_label("Fully Restrained Moment Connections13", "Component")
     assert not v.is_label("9θ y", "LS") and not v.is_label("about 2 kips", "0.5")
 
 
-def test_missing_rows_and_columns_are_grid_errors():
+def test_missing_rows_and_columns_are_errors_that_retry():
     t = table("docling", GRID)
-    r = result([RowOut(row=1, conditions=[], values=[value(5, 1.5)])])
-    assert codes(v.check_table(r, t, t.rows)) == ["grid_dimension", "grid_dimension"]
+    r = result([RowOut(row=1, conditions=[], values=[value(5, 1.5)])], headers=[])
+    assert codes(v.check_table(r, t, t.rows)) == ["grid_dimension", "row_missing", "value_column"]
 
 
 def test_blank_cells_are_flagged_and_must_be_blank():
@@ -421,3 +426,23 @@ def test_pi_next_to_a_number_is_a_product():
     as_symbol = e.model_copy(update={"sympy": "S_d = S_a*g*T**2/(4*pi_ratio**2)"})
     assert v.check_equation_latex(as_symbol, {"S_d": "S_d", "S_a": "S_a", "g": "g", "T": "T",
                                               "pi_ratio": "pi"}, "t") is not None
+
+
+def test_every_value_column_needs_a_header_parameter_or_the_table_retries():
+    t = table("docling", GRID)
+    rows = [RowOut(row=1, conditions=["Flexible"], values=[value(1, 1.5), value(2, 2000, "2,000")])]
+    only_first = [HeaderParameter(col=1, parameter_id="m_factor", header_text="m-factor", units=None)]
+    issues = [i for i in v.check_table(result(rows, headers=only_first), t, t.rows) if i.code == "value_column"]
+    assert len(issues) == 1 and issues[0].retry and issues[0].severity == "high" and "[2]" in issues[0].detail
+
+
+def test_a_parameter_listed_once_per_column_passes_the_column_check():
+    rows = [RowOut(row=1, conditions=[], values=[value(1, 1.5)]), RowOut(row=2, conditions=[], values=[value(2, 0.25)])]
+    shifted = [HeaderParameter(col=c, parameter_id="m_factor", header_text="m-factor", units=None) for c in (1, 2)]
+    assert v.value_columns(result(rows, headers=shifted)) == []
+
+
+def test_a_caption_repeated_in_the_grid_is_not_a_body_row():
+    t = table("docling", [["Type", "m-factor", "Limit"], ["Table 1 Values 2"], ["Flexible", "1.5", "2,000"]])
+    r = result([RowOut(row=2, conditions=[], values=[value(1, 1.5), value(2, 2000)])])
+    assert "row_missing" not in codes(v.check_table(r, t, t.rows))

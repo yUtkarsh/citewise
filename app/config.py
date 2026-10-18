@@ -23,6 +23,8 @@ class Settings:
     model_profile: str
     clause_crops: str  # always | flagged (SPEC Step 3b.4)
     server_fallback: bool  # send `fallbacks: "default"` on models that support it
+    embed_model: str  # local sentence-transformers model for find_entry (runs offline)
+    agent_effort: str  # output_config.effort for the chat agent
 
 
 @lru_cache
@@ -38,6 +40,8 @@ def get_settings() -> Settings:
         model_profile=os.getenv("MODEL_PROFILE", ""),
         clause_crops=os.getenv("CLAUSE_CROPS", "always").strip().lower(),
         server_fallback=os.getenv("SERVER_FALLBACK", "1").strip() not in ("0", "false", "no", ""),
+        embed_model=os.getenv("EMBED_MODEL", "BAAI/bge-small-en-v1.5"),
+        agent_effort=os.getenv("AGENT_EFFORT", "medium").strip().lower(),
     )
 
 

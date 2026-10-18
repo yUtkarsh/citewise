@@ -151,8 +151,14 @@ class PinStore:
 
 def passes(job: Job, outcome: Outcome) -> bool:
     """Good enough to replace a stored answer: extracted, and for a strict job (one run
-    with a reviewer hint) every equation verified by the LaTeX check."""
-    if outcome.status != "extracted" or outcome.output is None:
+    with a reviewer hint) every equation verified by the LaTeX check. A table answer
+    only needs every check that asks for a retry to pass (numbers, columns, rows):
+    blank-cell readings always go to review, so they never stop a replacement."""
+    if outcome.output is None:
+        return False
+    if job.kind == "table":
+        return not any(i.retry for i in outcome.issues)
+    if outcome.status != "extracted":
         return False
     return not (job.strict and any(i.code == "equation_latex" for i in outcome.issues))
 

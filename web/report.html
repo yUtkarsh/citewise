@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Ingestion Report</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+  <script src="shell.js" defer></script>
+  <script src="report.js" defer></script>
+</head>
+<body class="page">
+  <header class="topbar">
+    <a class="brand brand-link" href="/"><span class="brand-mark" aria-hidden="true"></span><span class="brand-name">Code Graph Agent</span></a>
+    <div class="topbar-right">
+      <button class="icon-btn" id="theme-toggle" type="button" aria-label="Switch theme" title="Switch theme">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M12 3a9 9 0 1 0 9 9 7 7 0 0 1-9-9z" fill="currentColor"/></svg>
+      </button>
+    </div>
+  </header>
+  <main class="page-main" id="report">
+    <a class="back" href="/">← Library</a>
+    <div class="card skeleton-card"></div>
+  </main>
+</body>
+</html>

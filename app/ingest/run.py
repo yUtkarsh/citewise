@@ -72,6 +72,7 @@ def run_pass2_cli(doc, pdf_hash: str, profile: Profile, name: str, args, log) ->
                         concurrency=args.concurrency, redo=args.redo, dry_run=args.dry_run, crop_mode=crop_mode,
                         max_cost=args.max_cost,
                         clause_ids={c.strip() for c in args.clauses.split("|")} if args.clauses else None,
+                        table_ids={t.strip() for t in args.tables.split("|")} if args.tables else None,
                         use_cache=not args.no_cache,
                         save_images_dir=DEBUG_DIR if args.save_sent_images else None,
                         hint=args.hint)
@@ -189,6 +190,7 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--clause-crops", choices=["always", "flagged"], help="Pass 2: override CLAUSE_CROPS")
     parser.add_argument("--max-cost", type=float, help="Pass 2: stop starting calls once estimated spend reaches this (USD)")
     parser.add_argument("--clauses", help="Pass 2: only these clause ids, separated by '|' (ids may contain commas)")
+    parser.add_argument("--tables", help="Pass 2: only these table ids, separated by '|' (e.g. 'Table 6-7|Table 6-19')")
     parser.add_argument("--no-cache", action="store_true", help="Pass 2: ask again for the selected jobs, replacing cached answers")
     parser.add_argument("--hint", help="Pass 2: a reviewer note added to the selected clauses (use with --clauses); "
                                        "the stored answer is replaced only if the new one passes every check")

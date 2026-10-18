@@ -9,7 +9,7 @@ import pytest
 from app.ingest.pass2 import validate as v
 from app.ingest.pass2.records import RowRec, Skeleton2, TableRec, table_trust
 from app.ingest.pass2.run_pass2 import Pass2Options, run_pass2
-from app.ingest.pass2.schemas import CellRead, CellReads, CellValue, RowOut, TableExtraction
+from app.ingest.pass2.schemas import CellRead, CellReads, CellValue, HeaderParameter, RowOut, TableExtraction
 from app.llm import Reply
 
 GRID = [["Type", "m"], ["Flexible", "1.5"], ["Stiff", "2.0"]]
@@ -25,7 +25,8 @@ def table(trust="text", cells=GRID):
 
 
 def answer(*numbers):
-    return TableExtraction(header_parameters=[], footnote_rules=[], blank_cells=[], rows=[
+    return TableExtraction(header_parameters=[HeaderParameter(col=1, parameter_id="m", header_text="m", units=None)],
+                           footnote_rules=[], blank_cells=[], rows=[
         RowOut(row=i + 1, conditions=[], values=[CellValue(col=1, value=str(n), number=n, unit=None, formula=None)])
         for i, n in enumerate(numbers)])
 
