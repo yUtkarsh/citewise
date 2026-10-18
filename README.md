@@ -4,7 +4,7 @@
 
 ![CiteWise answering a question, with the graph it walked](docs/screenshots/hero.png)
 
-**Demo video:** _[link to the demo video]_
+**Demo video:** https://youtu.be/QA0GnTvDuRo
 
 Built for **Graph Hacks** (WeMakeDevs × FalkorDB), entered in all three tracks: Agents That
 Act on Connected Data, Company Brain, and Agent Memory and Coordination.
