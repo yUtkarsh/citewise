@@ -50,6 +50,17 @@ def test_columns_map_by_column_with_shared_columns_and_fall_back_to_order():
     assert map_columns([2, 3, 4], two) == ({}, None)  # counts differ: no mapping
 
 
+def test_a_condition_parameter_is_never_mapped_as_a_value():
+    # 'kind' comes first and is listed for one column, like 'a': without the exclusion it would win column 1
+    headers = [Header("kind", [1], "kind", None, 0), Header("a", [1], "a", None, 1), Header("b", [2], "b", None, 2)]
+    by_col, _ = map_columns([1, 2], headers)
+    assert by_col[1].id == "kind"
+    by_col, method = map_columns([1, 2], headers, exclude={"kind"})
+    assert method == "column" and [by_col[1].id, by_col[2].id] == ["a", "b"]
+    by_col, method = map_columns([1, 2, 3], headers, exclude={"kind"})
+    assert method is None  # three values, two value parameters: no order alignment either
+
+
 def test_fulltext_query_keeps_words_only():
     assert ft_query("What does Section 3.3.1.3 (a) reference?") == "Section|reference"
 
@@ -98,6 +109,25 @@ def test_an_equation_flagged_high_is_not_computed(code_graph):
 def test_table_without_deciding_facts_lists_candidates(code_graph):
     r = compute_table(code_graph, "Table 1-1", MemoryFacts())
     assert len(r.data["candidates"]) == 3 and "pick one" in r.summary
+
+
+def test_condition_columns_are_found_from_the_grid_and_never_returned(code_graph):
+    r = compute_table(code_graph, "Table 1-1", MemoryFacts(), row_id="Table 1-1#r3", reason="the member is type B")
+    assert r.data["condition_parameters"] == ["kind"]  # column 1 holds 'A', part of 'Type A', in rows 1 and 2
+    assert "kind" not in {v["param"] for v in r.data["values"]}
+    assert "kind" not in {h["id"] for h in r.data["header_parameters"]}
+    for row in ("Table 1-1#r1", "Table 1-1#r2"):
+        values = compute_table(code_graph, "Table 1-1", MemoryFacts(), row_id=row, reason="type A").data["values"]
+        assert [v["param"] for v in values] == ["a", "b"]
+
+
+def test_a_label_column_that_holds_values_in_other_rows_stays_a_value_column():
+    from app.agent.compute import condition_params
+
+    headers = [Header("d", [0], "d", None, 0), Header("e", [1], "e", None, 1)]
+    rows = [{"_cells": ["0.75", "2.0"], "_values": [{"col": 0}, {"col": 1}], "_conditions": ["Walls"]},
+            {"_cells": ["Beams", "Diagonal", "0.02"], "_values": [{"col": 2}], "_conditions": ["Beams", "Diagonal"]}]
+    assert condition_params(rows, headers) == set()  # columns 0 and 1 hold the walls' values
 
 
 def test_a_described_row_needs_a_reason_and_is_recorded(code_graph):

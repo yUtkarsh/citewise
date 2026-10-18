@@ -85,18 +85,19 @@ def build(g) -> None:
         _q(g, "MATCH (t:Table {id: $t}), (p:Parameter {id: $p}) CREATE (t)-[:GIVES {col: $c0, cols: $cols, "
               "header_text: $p, units: null}]->(p)", {"t": tid, "p": pid, "c0": cols[0], "cols": cols})
     value = lambda col, n: {"col": col, "value": str(n), "number": n, "unit": "radians", "formula": None}  # noqa
-    rows = [
-        ("Table 1-1", 1, ["Type A", "R ≤ 3"], [value(3, 0.02), value(4, 0.04)]),
-        ("Table 1-1", 2, ["Type A", "R ≥ 6"], [value(3, 0.01), value(4, 0.02)]),
-        ("Table 1-1", 3, ["Type B"], [value(1, 0.5), value(2, 0.6)]),
-        ("Table 1-2", 1, ["All members"], [value(2, 1.5), value(3, 2.5)]),
+    rows = [  # (table, index, conditions, values, Pass 1 grid cells)
+        ("Table 1-1", 1, ["Type A", "R ≤ 3"], [value(3, 0.02), value(4, 0.04)], ["Type A", "A", "≤ 3", "0.02", "0.04"]),
+        ("Table 1-1", 2, ["Type A", "R ≥ 6"], [value(3, 0.01), value(4, 0.02)], ["", "A", "≥ 6", "0.01", "0.02"]),
+        ("Table 1-1", 3, ["Type B"], [value(1, 0.5), value(2, 0.6)], ["Type B", "0.5", "0.6"]),
+        ("Table 1-2", 1, ["All members"], [value(2, 1.5), value(3, 2.5)], ["", "", "1.5", "2.5"]),
     ]
-    for tid, index, conds, values in rows:
+    for tid, index, conds, values, cells in rows:
         rid = f"{tid}#r{index}"
         _q(g, "MATCH (t:Table {id: $t}) CREATE (t)-[:HAS_ROW]->(:Row {id: $id, index: $i, page: $page, "
-              "conditions: $c, values: $v, blank_cells: '[]', status: 'extracted'})",
+              "conditions: $c, values: $v, cells: $cells, blank_cells: '[]', status: 'extracted'})",
            {"t": tid, "id": rid, "i": index, "page": 12 if tid == "Table 1-1" else 13,
-            "c": json.dumps(conds, ensure_ascii=False), "v": json.dumps(values)})
+            "c": json.dumps(conds, ensure_ascii=False), "v": json.dumps(values),
+            "cells": json.dumps(cells, ensure_ascii=False)})
     _q(g, "MATCH (t:Table {id: 'Table 1-1'}) CREATE (t)-[:HAS_FOOTNOTE]->(:Footnote {id: 'Table 1-1#fn1', "
           "marker: '1', text: '1. Interpolation is permitted.', rule_kind: 'interpolation', "
           "rule: 'Linear interpolation between rows is permitted.', applies_to_rows: [1, 2], applies_to_cols: []})")

@@ -11,7 +11,9 @@ description match); a pick that contradicts a decided condition is refused. When
 fact falls between two rows that differ only in one threshold and a footnote allows
 interpolation, the values are interpolated linearly. Values are mapped to header
 parameters by column; aligning by order is a fallback, used only when the row has as
-many values as the table has header parameters, and it is labelled.
+many values as the table has header parameters, and it is labelled. A header parameter
+that names a condition column (it holds the row's condition text, not a value) is never
+returned as a value.
 """
 from __future__ import annotations
 
@@ -19,10 +21,10 @@ from dataclasses import dataclass
 import json
 import re
 
-from app.agent.conditions import FALSE, TRUE, UNKNOWN, Evaluation, evaluate_all
+from app.agent.conditions import FALSE, TRUE, UNKNOWN, Evaluation, evaluate_all, norm
 from app.agent.facts import Fact, FactStore, RowMatch
 from app.agent.results import ASSUMED, Label, ToolResult, Touched, clean, flag_reasons, node_label
-from app.ingest.pass2.validate import SEVERITY, parse_relation
+from app.ingest.pass2.validate import SEVERITY, is_blank, parse_relation
 
 ORDER = "aligned by order"
 EQUATION_CODES = {c for c, s in SEVERITY.items()
@@ -217,11 +219,43 @@ def table_headers(graph, table_id: str) -> list[Header]:
             for i, (pid, cols, text, units) in enumerate(rows)]
 
 
-def map_columns(value_cols: list[int], headers: list[Header]) -> tuple[dict[int, Header], str | None]:
-    """Each value column -> a header parameter. By column first: a column shared by two
-    parameters (merged-cell grids list a quantity once per column) goes to the one listed
-    for several columns, then the first, each parameter used once per row. If that
-    fails, align by order, only when the counts match. Returns (mapping, method)."""
+def condition_params(rows: list[dict], headers: list[Header]) -> set[str]:
+    """Header parameters that name condition columns. A candidate: in some row, every one
+    of its columns holds a grid cell that is not one of the row's values and whose text
+    is part of the row's conditions (e.g. 'C' in 'Conforming transverse reinforcement').
+    A candidate stays a value parameter if one of its columns holds a value in some row
+    that no other value parameter claims (merged-cell grids put labels and values in the
+    same column for different row groups)."""
+    candidates = set()
+    for h in headers:
+        for row in rows:
+            cells = row.get("_cells") or []
+            value_cols = {v["col"] for v in row["_values"]}
+            conds = norm(" ".join(row["_conditions"]))
+            if h.cols and all(c < len(cells) and not is_blank(cells[c]) and c not in value_cols
+                              and norm(cells[c]) in conds for c in h.cols):
+                candidates.add(h.id)
+                break
+    used_cols = {v["col"] for row in rows for v in row["_values"]}
+    out = set()
+    for h in headers:
+        if h.id not in candidates:
+            continue
+        claimed = all(any(o.id != h.id and o.id not in candidates and c in o.cols for o in headers)
+                      for c in h.cols if c in used_cols)
+        if claimed:
+            out.add(h.id)
+    return out
+
+
+def map_columns(value_cols: list[int], headers: list[Header],
+                exclude: set[str] | frozenset = frozenset()) -> tuple[dict[int, Header], str | None]:
+    """Each value column -> a header parameter, never one in ``exclude`` (condition
+    parameters). By column first: a column shared by two parameters (merged-cell grids
+    list a quantity once per column) goes to the one listed for several columns, then
+    the first, each parameter used once per row. If that fails, align by order, only
+    when the counts match. Returns (mapping, method)."""
+    headers = [h for h in headers if h.id not in exclude]
     used: set[str] = set()
     mapping: dict[int, Header] = {}
     for col in sorted(value_cols):
@@ -252,6 +286,7 @@ def _load_table(graph, table_id: str):
                         {"id": table_id}):
         props["_conditions"] = json.loads(props.get("conditions") or "[]")
         props["_values"] = json.loads(props.get("values") or "[]")
+        props["_cells"] = json.loads(props.get("cells") or "[]")
         rows.append(props)
     rows.sort(key=lambda r: _row_index(r["id"]))
     notes = _props(graph, "MATCH (:Table {id: $id})-[:HAS_FOOTNOTE]->(f:Footnote) RETURN f", {"id": table_id})
@@ -291,9 +326,9 @@ def _interpolation_partner(row: dict, evals: list[Evaluation], rows: list[dict],
     return None
 
 
-def _values(row: dict, headers: list[Header]) -> tuple[list[dict], str | None]:
+def _values(row: dict, headers: list[Header], exclude: set[str]) -> tuple[list[dict], str | None]:
     cols = [v["col"] for v in row["_values"]]
-    mapping, method = map_columns(cols, headers)
+    mapping, method = map_columns(cols, headers, exclude)
     out = []
     for v in row["_values"]:
         h = mapping.get(v["col"])
@@ -310,12 +345,14 @@ def compute_table(graph, table_id: str, store: FactStore, row_id: str | None = N
         return ToolResult(f"no table {table_id!r}", {"table": table_id}, error=True)
     facts = store.all()
     headers = table_headers(graph, table_id)
+    conditions = condition_params(rows, headers)
     t = Touched()
     t.node("Table", table_id)
     labels = [x for x in [node_label(table, "Table")] if x]
     base = {"table": table_id, "caption": table.get("caption"), "pages": table.get("pages") or [table.get("page")],
             "header_parameters": [{"id": h.id, "header": h.header_text, "cols": h.cols, "units": h.units}
-                                  for h in headers]}
+                                  for h in headers if h.id not in conditions],
+            "condition_parameters": sorted(conditions)}
     evals = {r["id"]: evaluate_all(r["_conditions"], facts) for r in rows}
 
     if row_id is None:
@@ -340,7 +377,7 @@ def compute_table(graph, table_id: str, store: FactStore, row_id: str | None = N
     t.edge(table_id, "HAS_ROW", row_id)
     if node_label(row, "Row") and not labels:
         labels.append(node_label(row, "Row"))
-    values, method = _values(row, headers)
+    values, method = _values(row, headers, conditions)
     interpolation = None
     if any(e.status == FALSE for e in row_evals):
         found = _interpolation_partner(row, row_evals, rows, facts, notes)
@@ -353,7 +390,7 @@ def compute_table(graph, table_id: str, store: FactStore, row_id: str | None = N
         other, pivot, o_pivot, rule = found
         t.node("Row", other["id"])
         t.edge(table_id, "HAS_ROW", other["id"])
-        values, method, interpolation = _interpolate(row, other, pivot, o_pivot, headers)
+        values, method, interpolation = _interpolate(row, other, pivot, o_pivot, headers, conditions)
         interpolation["footnote"] = rule.get("marker")
         t.node("Footnote", rule.get("id"))
         t.edge(table_id, "HAS_FOOTNOTE", rule.get("id"))
@@ -397,10 +434,10 @@ def compute_table(graph, table_id: str, store: FactStore, row_id: str | None = N
                       data, t, labels)
 
 
-def _interpolate(row, other, pivot: Evaluation, o_pivot: Evaluation, headers):
+def _interpolate(row, other, pivot: Evaluation, o_pivot: Evaluation, headers, exclude):
     """Linear interpolation of each mapped value between two rows at the fact's value."""
-    a_vals, method = _values(row, headers)
-    b_vals, _ = _values(other, headers)
+    a_vals, method = _values(row, headers, exclude)
+    b_vals, _ = _values(other, headers, exclude)
     by_param = {v["param"]: v for v in b_vals if v["param"]}
     x, xa, xb = pivot.lhs_value, pivot.rhs_value, o_pivot.rhs_value
     out = []

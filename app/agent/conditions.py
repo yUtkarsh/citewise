@@ -50,6 +50,7 @@ class Evaluation:
 
 def norm(text: str) -> str:
     text = (text or "").lower().replace("′", "'").replace("’", "'").replace("√", "sqrt")
+    text = text.replace("≤", "<=").replace("≥", ">=")
     return re.sub(r"[\s()*·×]+", "", text)
 
 
