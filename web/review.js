@@ -93,14 +93,14 @@ function itemHtml(d) {
     <div class="section-label">Why it is flagged</div>
     <ul class="flags">${d.flags.map((f) => `<li class="sev-${esc(f.severity || "medium")}"><b>${esc(f.reason)}</b> · ${esc(f.severity || "")}${f.detail ? `<br>${esc(f.detail)}` : ""}</li>`).join("")}</ul>
     ${d.review_note ? `<p class="hint">Last reviewer note: ${esc(d.review_note)}</p>` : ""}
-    ${d.label === "Clause" ? clauseHtml(d) : tableHtml(d)}
+    ${d.label === "Clause" ? clauseHtml(d) : d.label === "Finding" ? findingHtml(d) : tableHtml(d)}
     <div class="actions" id="actions">
       <div class="section-label">Decision</div>
       <textarea id="note" rows="2" placeholder="Note: what is wrong (required to reject, optional to approve)"></textarea>
       ${d.label === "Table" ? `<label class="hint"><input type="checkbox" id="grid-wrong"> The grid is wrong: rebuild it from the image first</label>` : ""}
       <div class="card-actions">
         <button type="button" class="btn primary" id="approve">Approve</button>
-        <button type="button" class="btn" id="reject">Reject and re-run with the note</button>
+        <button type="button" class="btn" id="reject">${d.label === "Finding" ? "Reject (dismiss) with the note" : "Reject and re-run with the note"}</button>
         <span class="hint" id="action-msg"></span>
       </div>
     </div>
@@ -122,6 +122,21 @@ function clauseHtml(d) {
     ${eqs ? `<div class="section-label">Equations: crop beside the extracted LaTeX</div>${eqs}` : ""}
     <div class="section-label">Extracted</div>
     ${extractedLists(x)}`;
+}
+
+function findingHtml(d) {
+  const f = d.finding;
+  const subjects = f.subjects.map((s) => `<li><span class="hint">${esc(s.label)}</span> ${esc(s.id)}${s.title ? ` · ${esc(String(s.title).slice(0, 140))}` : ""}${s.page ? ` <span class="hint">p. ${esc(s.page)}</span>` : ""}${s.exists ? "" : ` <span class="src-error">not in the graph</span>`}</li>`).join("");
+  const p = f.proposal;
+  const proposal = !p ? `<p class="hint">A graph-wide check's hit: approving records that you checked it.</p>`
+    : p.type === "edges" ? `<ul>${p.edges.map((e) => `<li>${esc(e.src)} <b>-${esc(e.kind)}${e.props.type ? ` (${esc(e.props.type)})` : ""}→</b> ${esc(e.dst)} · confidence ${esc(e.props.confidence)} · ${esc(e.props.reason || "")}</li>`).join("")}</ul><p class="hint">Approving stores ${p.edges.length === 1 ? "this edge" : "these edges"} as inferred (labelled “inferred” in answers).</p>`
+    : p.type === "merge" ? `<p>Merge ${esc(p.removed.join(", "))} into <b>${esc(p.survivor)}</b> · confidence ${esc(p.confidence)} · ${esc(p.reason || "")}</p><p class="hint">Approving moves every edge to ${esc(p.survivor)} and keeps the old ids resolvable.</p>`
+    : jsonToggle(p);
+  return `
+    <div class="section-label">${esc(f.kind)} · ${esc(f.method || "")}${f.confidence != null && f.method !== "cypher" ? ` · confidence ${esc(f.confidence)}` : ""}</div>
+    <ul class="flags">${subjects}</ul>
+    <div class="section-label">${p ? "Proposal" : "What to do"}${f.applied ? " · applied" : ""}</div>
+    ${proposal}`;
 }
 
 function extractedLists(x) {
@@ -230,7 +245,8 @@ function wireActions(d) {
     try {
       const r = await getJSON(`${itemUrl(d)}/approve`, { method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ note: $("#note").value.trim() || null }) });
-      busy(false, `Approved${r.pins_approved.length ? `; pinned answer locked (${r.pins_approved.length})` : ""}. ${r.note || ""}`);
+      busy(false, d.label === "Finding" ? `Approved${r.applied ? "; the proposal was applied" : ""}.`
+        : `Approved${r.pins_approved.length ? `; pinned answer locked (${r.pins_approved.length})` : ""}. ${r.note || ""}`);
       updateItem(d, "approved");
     } catch (err) { busy(false, `<span class="src-error">${esc(err.message)}</span>`); }
   };
@@ -238,11 +254,12 @@ function wireActions(d) {
     const note = $("#note").value.trim();
     if (!note) { msg.innerHTML = `<span class="src-error">Write a note first: it is sent to Claude with the original inputs.</span>`; $("#note").focus(); return; }
     const gridWrong = !!($("#grid-wrong") && $("#grid-wrong").checked);
-    busy(true, gridWrong ? "Rebuilding the grid from the image, then re-running this job with your note…"
+    busy(true, d.label === "Finding" ? "Dismissing…" : gridWrong ? "Rebuilding the grid from the image, then re-running this job with your note…"
       : "Re-running this job with your note on the review model…");
     try {
       const r = await getJSON(`${itemUrl(d)}/reject`, { method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ note, grid_wrong: gridWrong }) });
+      if (d.label === "Finding") { busy(false, "Dismissed."); updateItem(d, r.review_status); return; }
       busy(false, r.grid && !r.grid.ok ? "The rebuilt grid failed its check, so the grid and the answer stay as they were."
         : r.replaced ? "The new answer passes its checks and replaced the old one. It is back in the queue for approval."
         : `The new answer did not pass, so the stored one stays. Status: ${esc((r.review_status || "").replace("_", " "))}.`);

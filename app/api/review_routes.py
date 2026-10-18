@@ -113,7 +113,20 @@ def queue(graph) -> list[dict]:
             "severity": _severity(parsed), "reasons": sorted({f.get("reason") or "?" for f in parsed}),
             "flags": len(parsed), "rejections": rejections or 0, "note": note,
         })
+    items += finding_items(graph)
     items.sort(key=lambda i: (-SEVERITY_RANK.get(i["severity"], 0), i["page"] or 0, i["id"]))
+    return items
+
+
+def finding_items(graph) -> list[dict]:
+    """Global-pass findings (SPEC Step 3c): a check's hit, or a proposal stored for review."""
+    items = []
+    for (p,) in _rows(graph, "MATCH (f:Finding) RETURN properties(f)"):
+        p = dict(p)
+        items.append({"job": f"finding:{p['id']}", "label": "Finding", "id": p["id"], "title": p.get("reason") or p["id"],
+                      "page": p.get("page"), "status": p.get("status"), "review_status": p.get("review_status") or "unreviewed",
+                      "severity": p.get("severity") or "medium", "reasons": [p.get("kind") or "finding"], "flags": 1,
+                      "rejections": 0, "note": p.get("review_note")})
     return items
 
 
@@ -135,9 +148,34 @@ def review_queue(name: str) -> dict:
 
 # ---- one item ----------------------------------------------------------------------------------
 
+def finding_detail(graph, name: str, nid: str) -> dict:
+    found = _rows(graph, "MATCH (f:Finding {id: $id}) RETURN properties(f)", {"id": nid})
+    if not found:
+        raise HTTPException(404, f"finding {nid!r} not found")
+    p = dict(found[0][0])
+    subjects = []
+    for label, sid in zip(p.get("subject_labels") or [], p.get("subjects") or []):
+        row = _rows(graph, f"MATCH (n:{label} {{id: $id}}) RETURN coalesce(n.title, n.caption, n.description, "
+                           "n.latex, n.symbol), n.page", {"id": sid}) if label.isidentifier() else []
+        subjects.append({"label": label, "id": sid, "title": row[0][0] if row else None,
+                         "page": row[0][1] if row else None, "exists": bool(row)})
+    proposal = _json(p.get("proposal"), None)
+    return {"label": "Finding", "id": nid, "job": f"finding:{nid}", "kind": p.get("kind"), "page": p.get("page"),
+            "status": p.get("status"), "review_status": p.get("review_status"), "review_note": p.get("review_note"),
+            "rejections": 0, "title": p.get("reason") or nid,
+            "flags": [{"reason": p.get("kind"), "severity": p.get("severity") or "medium",
+                       "detail": p.get("detail") or ""}],
+            "finding": {"kind": p.get("kind"), "reason": p.get("reason"), "detail": p.get("detail"),
+                        "confidence": p.get("confidence"), "method": p.get("extraction_method"),
+                        "subjects": subjects, "proposal": proposal, "applied": p.get("applied")},
+            "pdf_url": f"/pdf/{name}#page={p['page']}" if p.get("page") else None}
+
+
 def item_detail(graph, name: str, label: str, nid: str) -> dict:
+    if label == "Finding":
+        return finding_detail(graph, name, nid)
     if label not in ("Clause", "Table"):
-        raise HTTPException(404, "review items are clauses and tables")
+        raise HTTPException(404, "review items are clauses, tables and global-pass findings")
     found = _rows(graph, f"MATCH (n:{label} {{id: $id}}) RETURN properties(n)", {"id": nid})
     if not found:
         raise HTTPException(404, f"{label} {nid!r} not found")
@@ -287,7 +325,24 @@ def _document_hash(graph) -> str:
     return rows[0][0]
 
 
+def decide_finding(graph, nid: str, approved: bool, note: str | None) -> dict:
+    """Approve applies the finding's proposal (an edge or a merge) once; reject dismisses it."""
+    from app.ingest.global_pass.apply import apply_proposal
+
+    item = finding_detail(graph, "", nid)
+    result = {"applied": False}
+    if approved and not item["finding"].get("applied"):
+        result = apply_proposal(graph, {"id": nid, "proposal": item["finding"]["proposal"]})
+    graph.query("MATCH (f:Finding {id: $id}) SET f.review_status = $s, f.review_time = $t, f.review_note = $note, "
+                "f.applied = coalesce(f.applied, false) OR $applied, f.status = $status",
+                {"id": nid, "s": "approved" if approved else "rejected", "t": time.time(), "note": note,
+                 "applied": bool(result.get("applied")), "status": "decided"})
+    return {"approved": approved, **result}
+
+
 def approve(graph, label: str, nid: str, note: str | None, paths: Paths) -> dict:
+    if label == "Finding":
+        return decide_finding(graph, nid, True, note)
     item = item_detail(graph, "", label, nid)
     pins = paths.pins(_document_hash(graph))
     pinned = _pin_ids(pins, item["job"])
@@ -483,6 +538,11 @@ async def reject(graph, name: str, label: str, nid: str, note: str, paths: Paths
     if not note or not note.strip():
         raise HTTPException(422, "a rejection needs a note saying what is wrong")
     before = item_detail(graph, name, label, nid)
+    if label == "Finding":  # a finding is dismissed, not re-extracted
+        decide_finding(graph, nid, False, note.strip())
+        after = item_detail(graph, name, label, nid)
+        return {"before": before, "after": after, "review_status": "rejected", "grid": None, "results": [],
+                "replaced": False, "after_view": None, "log": ["finding dismissed"]}
     grid = None
     if label == "Table" and grid_is_wrong(note, grid_wrong):
         grid = await revise_grid(graph, name, nid, note.strip(), paths, grid_transport or transport)
